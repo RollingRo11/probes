@@ -205,3 +205,25 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Runtime outputs — large artifacts not tracked in git
+logs/
+activations/
+data/*.jsonl
+data/*.pt
+
+# Probe checkpoints are large; keep only metrics
+results/**/*.pt
+
+# SAD repo — never commit decrypted benchmark questions
+sad/
+sad-decrypted/
+**/structs/batch/
+**/structs/pile/
+**/structs/sampletemplates/
+**/structs/evalspecs/
+**/structs/templateextensions/
+# Catch any accidentally decrypted SAD YAML files at any depth
+**/test_oversight.yaml
+**/deploy_oversight.yaml
+**/oversight.yaml
