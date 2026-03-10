@@ -24,6 +24,7 @@ Gradient-based probes use full-batch AdamW (lr=1e-4, wd=3e-3, 1000 epochs, BCE l
 |---|---|---|---|
 | SAD stages\_oversight | `sad_stages` | 400 | [Laine et al. 2024](https://arxiv.org/abs/2407.04694) reconstructed from BigBench/WMDP/WildChat |
 | Simple Contrastive | `simple_contrastive` | ~202 | [Marks et al. 2025](https://arxiv.org/abs/2507.01786), 101 MCQ questions × 2 answer tokens |
+| Pivotal Contrastive | `pivotal_contrastive` | 400 | [Jordine/pivotal-test-phase-steering](https://github.com/Jordine/pivotal-test-phase-steering), 200 MCQ questions × 2 answer tokens |
 | Synthetic | `default` | configurable | Hardcoded deployment + prefixed evaluation prompts |
 
 See [INSTRUCTIONS.md](INSTRUCTIONS.md) for full setup and dataset details.

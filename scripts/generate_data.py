@@ -39,8 +39,14 @@ simple_contrastive
     (character offset into `text` of the answer token to extract), which
     the extraction code uses when token_strategy == "answer_token".
 
+pivotal_contrastive
+    Pivotal Contrastive Dataset from Jordine/pivotal-test-phase-steering.
+    200 MCQ questions about evaluation awareness, producing 400 entries
+    (two per question, one per answer token). Similar to simple_contrastive
+    but with different question text and swapped answer orders.
+
 all
-    Concatenation of sad_stages + simple_contrastive + default.
+    Concatenation of sad_stages + simple_contrastive + pivotal_contrastive + default.
 
 Usage
 -----
@@ -57,6 +63,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -528,7 +535,76 @@ def load_simple_contrastive(
 
 
 # ---------------------------------------------------------------------------
-# Dataset 3: default (synthetic, fast)
+# Dataset 3: Pivotal Contrastive (Jordine/pivotal-test-phase-steering)
+# ---------------------------------------------------------------------------
+
+_PIVOTAL_URL = (
+    "https://raw.githubusercontent.com/Jordine/pivotal-test-phase-steering"
+    "/main/datasets/contrastive_dataset.json"
+)
+
+
+def load_pivotal_contrastive(seed: int = 42) -> list[dict]:
+    """Load the pivotal contrastive dataset (200 MCQ questions).
+
+    Source: https://github.com/Jordine/pivotal-test-phase-steering
+    Format: each entry has ``question``, ``positive``, ``negative`` fields.
+    ``positive`` is the answer token for the evaluation-aware response (label 1)
+    and can be ``"(A)"`` or ``"(B)"`` depending on the question.
+
+    Produces two rows per question (same pattern as ``load_simple_contrastive``):
+      - Row at the ``positive`` token position → label=1
+      - Row at the ``negative`` token position → label=0
+    """
+    print("[pivotal_contrastive] Downloading dataset …")
+    with urllib.request.urlopen(_PIVOTAL_URL) as resp:
+        data = json.loads(resp.read().decode())
+
+    rng = random.Random(seed)
+    rows: list[dict] = []
+    uid = 0
+
+    for entry in data:
+        question = entry["question"]
+        positive = entry["positive"]   # e.g. "(A)" or "(B)"
+        negative = entry["negative"]   # opposite of positive
+
+        pos_char = question.index(positive)
+        neg_char = question.index(negative)
+
+        # positive token → label 1 (evaluation-aware)
+        rows.append({
+            "id": str(uid),
+            "text": question,
+            "label": 1,
+            "answer_token": positive[1],  # "A" or "B"
+            "answer_token_char": pos_char,
+            "source": "pivotal_contrastive",
+        })
+        uid += 1
+
+        # negative token → label 0 (evaluation-unaware)
+        rows.append({
+            "id": str(uid),
+            "text": question,
+            "label": 0,
+            "answer_token": negative[1],  # "A" or "B"
+            "answer_token_char": neg_char,
+            "source": "pivotal_contrastive",
+        })
+        uid += 1
+
+    rng.shuffle(rows)
+    print(
+        f"[pivotal_contrastive] {len(rows)} entries from {len(data)} questions  "
+        f"(label=1: {sum(1 for r in rows if r['label']==1)}, "
+        f"label=0: {sum(1 for r in rows if r['label']==0)})"
+    )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Dataset 4: default (synthetic, fast)
 # ---------------------------------------------------------------------------
 
 
@@ -608,13 +684,14 @@ def main() -> None:
     ap.add_argument(
         "--dataset",
         default="default",
-        choices=["default", "sad_stages", "simple_contrastive", "all"],
+        choices=["default", "sad_stages", "simple_contrastive", "pivotal_contrastive", "all"],
         help=(
             "Dataset to generate:\n"
-            "  default           — synthetic prompts (fast, no HF downloads)\n"
-            "  sad_stages        — SAD stages_oversight (Laine et al. 2024 / arXiv:2509.13333)\n"
-            "  simple_contrastive— Simple Contrastive Dataset (arXiv:2507.01786)\n"
-            "  all               — all three concatenated"
+            "  default              — synthetic prompts (fast, no HF downloads)\n"
+            "  sad_stages           — SAD stages_oversight (Laine et al. 2024 / arXiv:2509.13333)\n"
+            "  simple_contrastive   — Simple Contrastive Dataset (arXiv:2507.01786)\n"
+            "  pivotal_contrastive  — Pivotal Contrastive Dataset (Jordine/pivotal-test-phase-steering)\n"
+            "  all                  — all four concatenated"
         ),
     )
     ap.add_argument("--out", default="data/eval_awareness.jsonl")
@@ -669,6 +746,9 @@ def main() -> None:
         if args.n is not None:
             n_q = args.n // 2  # yields ~n entries (2 per question)
         rows += load_simple_contrastive(n_questions=n_q, seed=args.seed)
+
+    if args.dataset in ("pivotal_contrastive", "all"):
+        rows += load_pivotal_contrastive(seed=args.seed)
 
     if args.dataset in ("default", "all"):
         n_each = 300 if args.n is None else args.n // 2

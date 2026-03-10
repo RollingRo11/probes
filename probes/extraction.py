@@ -1,18 +1,7 @@
-"""Activation extraction using NNsight 0.6.
+"""Activation extraction using PyTorch forward hooks.
 
-Loads the target model via NNsight's LanguageModel, runs all dataset examples
-in batches, and saves per-layer hidden states to disk.
-
-NNsight 0.6 API notes
----------------------
-- `LanguageModel(model_id, device_map="auto", dispatch=True)` loads eagerly.
-- Inside `model.trace(inputs)`, model attributes are proxies.
-- `.output[0]` is the hidden-state tensor for Llama/OLMo decoder layers
-  (first element of the `(hidden_states, *rest)` output tuple).
-- Call `.save()` on any proxy you want to read after the context exits;
-  access the concrete tensor via `.value`.
-- NNsight 0.6 supports a vLLM backend for remote/distributed execution
-  (same tracing API, add `backend="vllm"` or `remote=True` for NDIF).
+Loads the target model, runs all dataset examples in batches, and saves
+per-layer hidden states to disk.
 
 Saved artefacts
 ---------------
@@ -40,7 +29,7 @@ from pathlib import Path
 
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def _char_offsets_to_token_positions(
@@ -55,7 +44,6 @@ def _char_offsets_to_token_positions(
     character at `char_offset` in each text.  Falls back to last token
     if the offset falls outside the truncated sequence.
     """
-    # Re-tokenize with offset_mapping (can't get it from the already-padded enc).
     enc_with_offsets = tokenizer(
         texts,
         padding=True,
@@ -77,16 +65,15 @@ def _char_offsets_to_token_positions(
                 found = True
                 break
         if not found:
-            # Fall back to last real token.
             positions[b] = enc["attention_mask"][b].sum().item() - 1
 
     return positions
 
 
-def _navigate(proxy, path: str):
-    """Follow dot-separated attribute path on an NNsight proxy or plain module."""
-    obj = proxy
-    for attr in path.split("."):
+def _get_layer_list(model, layer_path: str):
+    """Follow dot-separated attribute path to the layer ModuleList."""
+    obj = model
+    for attr in layer_path.split("."):
         obj = getattr(obj, attr)
     return obj
 
@@ -97,41 +84,15 @@ def extract_activations(
     labels: list[int],
     output_dir: str | Path,
     num_layers: int,
-    layer_path: str = "model.model.layers",
-    layer_output_index: int = 0,
+    layer_path: str = "model.layers",
+    layer_output_index: int | None = 0,
     token_strategy: str = "last",
     batch_size: int = 8,
     max_length: int = 2048,
     skip_if_exists: bool = True,
     answer_token_chars: list[int] | None = None,
 ) -> None:
-    """Extract and save hidden states for all layers.
-
-    Parameters
-    ----------
-    model_id          : HuggingFace model id.
-    texts             : list of input strings (already chat-formatted if needed).
-    labels            : int label per example (same length as texts).
-    output_dir        : directory to write tensors and metadata.
-    num_layers        : number of transformer layers to extract.
-    layer_path        : dot-separated attribute path to the layer ModuleList,
-                        e.g. "model.model.layers" for OLMo/Llama models.
-    layer_output_index: which element of the layer's output tuple is hidden states.
-    token_strategy    : "last" | "mean" | "all" | "answer_token"
-                          last         → last non-padding token
-                          mean         → mean over non-padding tokens
-                          all          → all positions (padded to max_length)
-                          answer_token → position of a specific answer token per example,
-                                         located via character offset in answer_token_chars.
-                                         Required for the Simple Contrastive Dataset.
-    batch_size        : examples per forward pass.
-    max_length        : tokenizer truncation length.
-    skip_if_exists    : if True, skip extraction when metadata.json already exists.
-    answer_token_chars: character offsets (one per example) pointing to the answer token
-                        within each text. Required when token_strategy="answer_token".
-    """
-    from nnsight import LanguageModel  # imported here to keep startup fast
-
+    """Extract and save hidden states for all layers."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,12 +108,33 @@ def extract_activations(
             "when token_strategy='answer_token'."
         )
 
-    print(f"[extraction] Loading model {model_id} via NNsight …")
-    model = LanguageModel(model_id, device_map="auto", dispatch=True)
+    print(f"[extraction] Loading model {model_id} …")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, torch_dtype=torch.bfloat16, device_map="auto",
+    )
+    model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Get the layer ModuleList and register forward hooks.
+    layers = _get_layer_list(model, layer_path)
+    captured: dict[int, torch.Tensor] = {}
+
+    def _make_hook(layer_idx: int):
+        def hook(_module, _input, output):
+            # output is either a tensor or a tuple (hidden_states, ...).
+            if layer_output_index is not None:
+                hidden = output[layer_output_index]
+            else:
+                hidden = output if isinstance(output, torch.Tensor) else output[0]
+            captured[layer_idx] = hidden.detach()
+        return hook
+
+    hooks = []
+    for i in range(num_layers):
+        hooks.append(layers[i].register_forward_hook(_make_hook(i)))
 
     n = len(texts)
     all_acts: dict[int, list[torch.Tensor]] = {i: [] for i in range(num_layers)}
@@ -162,52 +144,56 @@ def extract_activations(
         f"token_strategy={token_strategy!r}, n={n}"
     )
 
-    for start in tqdm(range(0, n, batch_size), desc="batches"):
-        batch_texts = texts[start : start + batch_size]
-        bs = len(batch_texts)
+    try:
+        for start in tqdm(range(0, n, batch_size), desc="batches"):
+            batch_texts = texts[start : start + batch_size]
+            bs = len(batch_texts)
 
-        enc = tokenizer(
-            batch_texts,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-
-        seq_lengths = enc["attention_mask"].sum(dim=1).long()   # (bs,)
-        last_positions = seq_lengths - 1                        # (bs,)
-
-        # For answer_token strategy: find the token position corresponding to the
-        # character offset of the answer token (e.g. "(A)" or "(B)") in each text.
-        if token_strategy == "answer_token":
-            answer_positions = _char_offsets_to_token_positions(
-                tokenizer,
+            # Use max_length padding for "all" strategy so all batches have
+            # the same seq_len dimension; otherwise pad to longest in batch.
+            pad_strategy = "max_length" if token_strategy == "all" else True
+            enc = tokenizer(
                 batch_texts,
-                answer_token_chars[start : start + bs],
-                enc,
-            )  # (bs,)
+                padding=pad_strategy,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
 
-        # ----- NNsight trace -----
-        with model.trace(enc):
-            layer_list = _navigate(model, layer_path)
-            saved = [
-                layer_list[i].output[layer_output_index].save()
-                for i in range(num_layers)
-            ]
-        # ----- collect -----
-        for i, s in enumerate(saved):
-            act = s.value.float().cpu()   # (bs, seq_len, hidden_size)
+            seq_lengths = enc["attention_mask"].sum(dim=1).long()
+            last_positions = seq_lengths - 1
 
-            if token_strategy == "last":
-                act = act[torch.arange(bs), last_positions, :]  # (bs, hidden)
-            elif token_strategy == "mean":
-                mask = enc["attention_mask"].unsqueeze(-1).float()  # (bs, seq, 1)
-                act = (act * mask).sum(1) / mask.sum(1)             # (bs, hidden)
-            elif token_strategy == "answer_token":
-                act = act[torch.arange(bs), answer_positions, :]    # (bs, hidden)
-            # else "all": keep (bs, seq_len, hidden)
+            if token_strategy == "answer_token":
+                answer_positions = _char_offsets_to_token_positions(
+                    tokenizer, batch_texts,
+                    answer_token_chars[start : start + bs], enc,
+                )
 
-            all_acts[i].append(act)
+            # Move inputs to model device and run forward pass.
+            device = next(model.parameters()).device
+            inputs = {k: v.to(device) for k, v in enc.items()}
+            with torch.no_grad():
+                model(**inputs)
+
+            # Collect captured activations (move to CPU immediately).
+            for i in range(num_layers):
+                act = captured[i].float().cpu()  # (bs, seq_len, hidden_size)
+
+                if token_strategy == "last":
+                    act = act[torch.arange(bs), last_positions, :]
+                elif token_strategy == "mean":
+                    mask = enc["attention_mask"].unsqueeze(-1).float()
+                    act = (act * mask).sum(1) / mask.sum(1)
+                elif token_strategy == "answer_token":
+                    act = act[torch.arange(bs), answer_positions, :]
+                # else "all": keep (bs, seq_len, hidden)
+
+                all_acts[i].append(act)
+
+            captured.clear()
+    finally:
+        for h in hooks:
+            h.remove()
 
     print("[extraction] Saving …")
     for i in range(num_layers):
@@ -238,13 +224,7 @@ def extract_activations(
 def load_activations(
     activations_dir: str | Path, layer: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load activations and labels for one layer.
-
-    Returns
-    -------
-    acts   : (n, hidden) or (n, seq_len, hidden)
-    labels : (n,) int64
-    """
+    """Load activations and labels for one layer."""
     d = Path(activations_dir)
     acts = torch.load(d / f"layer_{layer:02d}.pt", weights_only=True)
     labels = torch.load(d / "labels.pt", weights_only=True)

@@ -56,7 +56,6 @@ cover/
 *.pot
 
 # Django stuff:
-*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -206,16 +205,33 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Runtime outputs — large artifacts not tracked in git
-logs/
-activations/
+# ---------------------------------------------------------------
+# Project: large binary files
+# ---------------------------------------------------------------
+
+# Model weights, activations, probe checkpoints
+*.pt
+
+# Generated datasets (reproducible via scripts/generate_data.py)
 data/*.jsonl
-data/*.pt
 
-# Probe checkpoints are large; keep only metrics
-results/**/*.pt
+# SLURM temp scripts and stdout/stderr logs
+logs/**/slurm_logs/
+logs/*.out
+logs/*.err
 
+# wandb local sync directory
+wandb/
+
+# HuggingFace / model cache
+~./
+
+# Logs: INCLUDE reports, metrics, summaries, configs, SLURM stdout/stderr.
+# Only *.pt and *.sh are excluded above.
+
+# ---------------------------------------------------------------
 # SAD repo — never commit decrypted benchmark questions
+# ---------------------------------------------------------------
 sad/
 sad-decrypted/
 **/structs/batch/
@@ -223,7 +239,6 @@ sad-decrypted/
 **/structs/sampletemplates/
 **/structs/evalspecs/
 **/structs/templateextensions/
-# Catch any accidentally decrypted SAD YAML files at any depth
 **/test_oversight.yaml
 **/deploy_oversight.yaml
 **/oversight.yaml

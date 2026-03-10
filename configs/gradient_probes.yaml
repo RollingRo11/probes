@@ -63,6 +63,11 @@ slurm:
   extract_gpus: 1
   train_gpus: 1
 
+wandb:
+  enabled: false       # set to true to enable
+  project: "probes"
+  entity: null         # defaults to wandb default entity
+
 paths:
   data: "data/"
   activations: "activations/"

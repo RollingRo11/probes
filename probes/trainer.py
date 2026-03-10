@@ -138,8 +138,8 @@ def _train_one_seed(
     y_val: torch.Tensor,
     cfg: dict,
     device: torch.device,
-) -> tuple[float, float]:
-    """Train probe for one seed. Returns (val_auroc, val_weighted_error)."""
+) -> tuple[float, float, list[float]]:
+    """Train probe for one seed. Returns (val_auroc, val_weighted_error, epoch_losses)."""
     probe.to(device)
 
     lr = float(cfg.get("lr", 1e-4))
@@ -153,6 +153,7 @@ def _train_one_seed(
     y_tr = y_train.float().to(device)
 
     # Full-batch gradient descent
+    epoch_losses: list[float] = []
     probe.train()
     for _ in range(epochs):
         opt.zero_grad()
@@ -165,6 +166,7 @@ def _train_one_seed(
             logits = probe(X_tr)
 
         loss = F.binary_cross_entropy_with_logits(logits, y_tr)
+        epoch_losses.append(loss.item())
         loss.backward()
         opt.step()
 
@@ -182,7 +184,7 @@ def _train_one_seed(
         overtrigger_fpr_weight=cfg.get("overtrigger_fpr_weight", 50.0),
     )
     val_we = val_results["weighted_error"]
-    return val_auc, val_we
+    return val_auc, val_we, epoch_losses
 
 
 def train_gradient_probe(
@@ -199,10 +201,13 @@ def train_gradient_probe(
     probe_kwargs: dict | None = None,
     n_seeds: int = 1,
     base_seed: int = 42,
+    wandb_run=None,
 ) -> tuple[dict, nn.Module]:
     """Train a gradient-based probe with n_seeds initialisations.
 
     Selects the best probe on validation weighted error, then evaluates on test.
+    If wandb_run is provided, logs per-seed validation metrics and the best
+    seed's per-epoch training loss curve.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     probe_kwargs = probe_kwargs or {}
@@ -210,6 +215,7 @@ def train_gradient_probe(
     best_probe = None
     best_val_we = float("inf")
     best_val_auc = 0.0
+    best_epoch_losses: list[float] = []
     seed_logs = []
 
     merged_cfg = {**training_cfg, **eval_cfg}
@@ -219,15 +225,28 @@ def train_gradient_probe(
         _set_seed(seed)
         probe = build_probe(probe_type, hidden_size, **probe_kwargs)
 
-        val_auc, val_we = _train_one_seed(
+        val_auc, val_we, epoch_losses = _train_one_seed(
             probe, X_train, y_train, X_val, y_val, merged_cfg, device
         )
         seed_logs.append({"seed": seed, "val_auroc": val_auc, "val_weighted_error": val_we})
+
+        if wandb_run is not None:
+            wandb_run.log({
+                "seed": seed,
+                "seed/val_auroc": val_auc,
+                "seed/val_weighted_error": val_we,
+            })
 
         if val_we < best_val_we or best_probe is None:
             best_val_we = val_we
             best_val_auc = val_auc
             best_probe = probe
+            best_epoch_losses = epoch_losses
+
+    # Log per-epoch training loss curve for the best seed.
+    if wandb_run is not None and best_epoch_losses:
+        for epoch, loss_val in enumerate(best_epoch_losses):
+            wandb_run.log({"epoch": epoch, "train/bce_loss": loss_val})
 
     # Evaluate best probe on test set.
     test_scores = _aggregate_for_inference(best_probe, X_test.to(device), device)
@@ -264,6 +283,7 @@ def train_and_evaluate(
     eval_cfg: dict,
     dataset_cfg: dict,
     probe_kwargs: dict | None = None,
+    wandb_run=None,
 ) -> tuple[dict, object]:
     """Train and evaluate one (probe_type, layer) combination.
 
@@ -274,6 +294,7 @@ def train_and_evaluate(
     training_cfg: fields: lr, weight_decay, betas, epochs, n_seeds, full_batch, …
     eval_cfg    : fields: fnr_weight, hard_neg_fpr_weight, overtrigger_fpr_weight.
     dataset_cfg : fields: train_frac, val_frac, test_frac, seed.
+    wandb_run   : optional wandb run object for logging.
 
     Returns (metrics_dict, trained_probe).
     """
@@ -311,6 +332,7 @@ def train_and_evaluate(
         probe_kwargs=probe_kwargs,
         n_seeds=n_seeds,
         base_seed=seed,
+        wandb_run=wandb_run,
     )
 
 

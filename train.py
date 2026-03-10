@@ -49,6 +49,80 @@ REPO_DIR = Path(__file__).parent.resolve()
 
 
 # ---------------------------------------------------------------------------
+# wandb helpers
+# ---------------------------------------------------------------------------
+
+
+def _wandb_enabled(config: dict) -> bool:
+    return config.get("wandb", {}).get("enabled", False)
+
+
+def _wandb_init(config: dict, log_dir: Path, layer: int, probe_type: str):
+    """Init a wandb run for one (layer, probe_type) training job. Returns the run."""
+    import wandb
+
+    wandb_cfg = config.get("wandb", {})
+    group = log_dir.name  # all runs from one pipeline invocation share a group
+
+    # Flatten config for wandb's config panel.
+    flat = {}
+    for section, vals in config.items():
+        if isinstance(vals, dict):
+            for k, v in vals.items():
+                flat[f"{section}.{k}"] = v
+        else:
+            flat[section] = vals
+    flat["layer"] = layer
+    flat["probe_type"] = probe_type
+
+    run = wandb.init(
+        project=wandb_cfg.get("project", "probes"),
+        entity=wandb_cfg.get("entity"),
+        group=group,
+        name=f"layer_{layer:02d}_{probe_type}",
+        config=flat,
+        reinit=True,
+    )
+    return run
+
+
+def _wandb_log_summary_table(config: dict, log_dir: Path) -> None:
+    """Create a summary wandb run with a Table of all results from summary.csv."""
+    import csv
+    import wandb
+
+    csv_path = log_dir / "summary.csv"
+    if not csv_path.exists():
+        return
+
+    wandb_cfg = config.get("wandb", {})
+    group = log_dir.name
+
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        return
+
+    columns = list(rows[0].keys())
+    table = wandb.Table(columns=columns)
+    for row in rows:
+        table.add_data(*[row[c] for c in columns])
+
+    run = wandb.init(
+        project=wandb_cfg.get("project", "probes"),
+        entity=wandb_cfg.get("entity"),
+        group=group,
+        name="summary",
+        reinit=True,
+    )
+    run.log({"summary": table})
+    run.finish()
+    print("[wandb] Logged summary table.")
+
+
+# ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
 
@@ -210,6 +284,11 @@ def run_train(config: dict, log_dir: Path, layer: int, probe_type: str) -> None:
         print(f"[train] Already done: layer={layer} probe={probe_type}. Skipping.")
         return
 
+    # wandb: init run for this (layer, probe_type).
+    wb_run = None
+    if _wandb_enabled(config):
+        wb_run = _wandb_init(config, log_dir, layer, probe_type)
+
     print(f"[train] layer={layer}  probe={probe_type}")
     acts, labels = load_activations(acts_dir, layer)
 
@@ -235,6 +314,7 @@ def run_train(config: dict, log_dir: Path, layer: int, probe_type: str) -> None:
         eval_cfg=eval_cfg,
         dataset_cfg=dataset_cfg,
         probe_kwargs=probe_kwargs,
+        wandb_run=wb_run,
     )
     elapsed = __import__("time").time() - t0
 
@@ -244,6 +324,17 @@ def run_train(config: dict, log_dir: Path, layer: int, probe_type: str) -> None:
 
     save_results(metrics, result_path)
     save_probe(probe, out_dir / "probe.pt")
+
+    # wandb: log final metrics and finish.
+    if wb_run is not None:
+        wb_run.log({
+            "auroc": metrics.get("auroc"),
+            "weighted_error": metrics.get("weighted_error"),
+            "val_auroc": metrics.get("val_auroc"),
+            "val_weighted_error": metrics.get("val_weighted_error"),
+            "elapsed_s": metrics["elapsed_s"],
+        })
+        wb_run.finish()
 
     print(
         f"[train] layer={layer} probe={probe_type} "
@@ -258,8 +349,10 @@ def run_train(config: dict, log_dir: Path, layer: int, probe_type: str) -> None:
 
 
 def analyze(config: dict, log_dir: Path) -> None:
-    """Collect all results JSON files and write summary CSV."""
+    """Collect all results JSON files, write summary CSV, and generate HTML report."""
     import csv
+
+    from probes.report import generate_report
 
     res_dir = results_dir(log_dir)
     rows = []
@@ -279,18 +372,32 @@ def analyze(config: dict, log_dir: Path) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
+    # Print concise terminal summary: best probe per type.
     print(f"\n{'='*60}")
-    print("Probe Results (AUROC by layer and type)")
+    print("Best Probe per Type")
     print("=" * 60)
-    header = f"{'Layer':>6}  {'Probe':>16}  {'AUROC':>8}  {'Weighted Err':>14}"
+    header = f"{'Probe':>18}  {'Best Layer':>10}  {'AUROC':>8}  {'Weighted Err':>14}"
     print(header)
     print("-" * len(header))
+    by_type: dict[str, list[dict]] = {}
     for r in rows:
+        by_type.setdefault(r.get("probe_type", "?"), []).append(r)
+    for pt, pt_rows in sorted(by_type.items()):
+        best = max(pt_rows, key=lambda r: r.get("auroc", 0))
         print(
-            f"{r.get('layer', '?'):>6}  {r.get('probe_type', '?'):>16}  "
-            f"{r.get('auroc', float('nan')):>8.4f}  {r.get('weighted_error', float('nan')):>14.4f}"
+            f"{pt:>18}  {best.get('layer', '?'):>10}  "
+            f"{best.get('auroc', float('nan')):>8.4f}  "
+            f"{best.get('weighted_error', float('nan')):>14.4f}"
         )
-    print(f"\nSaved → {csv_path}")
+
+    print(f"\nCSV → {csv_path}")
+
+    # Generate interactive HTML report.
+    try:
+        report_path = generate_report(log_dir, config)
+        print(f"Report → {report_path}")
+    except Exception as e:
+        print(f"[analyze] Warning: could not generate HTML report: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +418,12 @@ def _write_extract_script(config: dict, config_path: Path, log_dir: Path) -> Pat
 
     sld = slurm_log_dir(log_dir)
 
+    # Forward WANDB_API_KEY if set so SLURM workers can authenticate.
+    wandb_env = ""
+    api_key = os.environ.get("WANDB_API_KEY", "")
+    if api_key:
+        wandb_env = f"\nexport WANDB_API_KEY='{api_key}'\n"
+
     script = f"""#!/bin/bash
 #SBATCH --job-name={job_name}_extract_{short}
 #SBATCH --nodes=1
@@ -324,7 +437,7 @@ def _write_extract_script(config: dict, config_path: Path, log_dir: Path) -> Pat
 
 set -euo pipefail
 cd {REPO_DIR}
-
+{wandb_env}
 uv run python train.py \\
     --config '{config_path}' \\
     --mode extract \\
@@ -355,6 +468,12 @@ def _write_train_script(
 
     sld = slurm_log_dir(log_dir)
 
+    # Forward WANDB_API_KEY if set so SLURM workers can authenticate.
+    wandb_env = ""
+    api_key = os.environ.get("WANDB_API_KEY", "")
+    if api_key:
+        wandb_env = f"\nexport WANDB_API_KEY='{api_key}'\n"
+
     script = f"""#!/bin/bash
 #SBATCH --job-name={job_name}_{short}_l{layer:02d}_{probe_type}
 #SBATCH --nodes=1
@@ -368,7 +487,7 @@ def _write_train_script(
 
 set -euo pipefail
 cd {REPO_DIR}
-
+{wandb_env}
 uv run python train.py \\
     --config '{config_path}' \\
     --mode train \\
@@ -481,6 +600,9 @@ async def run_orchestrator(config: dict, config_path: Path, log_dir: Path) -> No
     # Phase 3: analyze
     analyze(config, log_dir)
 
+    if _wandb_enabled(config):
+        _wandb_log_summary_table(config, log_dir)
+
 
 # ---------------------------------------------------------------------------
 # Local (no-SLURM) runner
@@ -502,6 +624,9 @@ def run_local(config: dict, log_dir: Path) -> None:
             run_train(config, log_dir, layer, probe_type)
 
     analyze(config, log_dir)
+
+    if _wandb_enabled(config):
+        _wandb_log_summary_table(config, log_dir)
 
 
 # ---------------------------------------------------------------------------

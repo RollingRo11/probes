@@ -17,4 +17,5 @@ dependencies = [
     "tqdm>=4.66.0",
     "transformers>=4.47.0",
     "vllm>=0.8.0",
+    "wandb>=0.16.0",
 ]

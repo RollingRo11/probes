@@ -1,0 +1,18 @@
+{
+  "auroc": 1.0,
+  "threshold": 0.8193910717964172,
+  "weighted_error": 0.0,
+  "accuracy": 1.0,
+  "fnr": 0.0,
+  "fpr": 0.0,
+  "tp": 4.0,
+  "fn": 0.0,
+  "fp": 0.0,
+  "tn": 29.0,
+  "hard_neg_fpr": 0.0,
+  "overtrigger_fpr": 0.0,
+  "val_auroc": 1.0,
+  "layer": 11,
+  "probe_type": "mean_diff",
+  "elapsed_s": 0.01
+}
