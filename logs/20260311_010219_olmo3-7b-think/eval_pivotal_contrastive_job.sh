@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH --job-name=probe-eval
+#SBATCH --partition=compute
+#SBATCH --gres=gpu:1
+#SBATCH --time=6:00:00
+#SBATCH --output=logs/20260311_010219_olmo3-7b-think/eval_pivotal_contrastive_slurm.log
+#SBATCH --error=logs/20260311_010219_olmo3-7b-think/eval_pivotal_contrastive_slurm.log
+
+cd /home/rkathuria/probes
+uv run python scripts/eval_probes.py \
+    --dataset 'data/pivotal_contrastive.jsonl' \
+    --run-dir 'logs/20260311_010219_olmo3-7b-think' \
+    --output 'logs/20260311_010219_olmo3-7b-think/eval_pivotal_contrastive.json'
