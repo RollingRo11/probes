@@ -22,14 +22,27 @@ import streamlit.components.v1 as components
 # Args (parsed from sys.argv after Streamlit's "--" separator)
 # ---------------------------------------------------------------------------
 
-def parse_args() -> argparse.Namespace:
+def get_data_dir() -> Path:
+    """Resolve data directory from CLI args, env var, or default."""
+    import os
+    # 1. CLI arg (for local use: streamlit run viewer.py -- --data-dir ...)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", required=True, help="Directory with manifest.json + example_*.json")
+    parser.add_argument("--data-dir", default=None)
     args, _ = parser.parse_known_args()
-    return args
+    if args.data_dir:
+        return Path(args.data_dir)
+    # 2. Environment variable (for Streamlit Cloud)
+    if os.environ.get("PROBE_DATA_DIR"):
+        return Path(os.environ["PROBE_DATA_DIR"])
+    # 3. Default: look relative to repo root
+    repo_root = Path(__file__).resolve().parent.parent
+    default = repo_root / "logs" / "20260311_232544_olmo3-7b-think" / "viz_sad"
+    if default.exists():
+        return default
+    st.error("No data directory found. Set --data-dir or PROBE_DATA_DIR env var.")
+    st.stop()
 
-args = parse_args()
-DATA_DIR = Path(args.data_dir)
+DATA_DIR = get_data_dir()
 
 # ---------------------------------------------------------------------------
 # Load data
