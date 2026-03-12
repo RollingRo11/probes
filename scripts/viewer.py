@@ -101,28 +101,40 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp { background-color: #1e1e1e; }
-    .block-container {
+    .block-container,
+    .stMainBlockContainer,
+    [data-testid="stAppViewBlockContainer"] {
         max-width: 100% !important;
         width: 100% !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
         padding-top: 1rem !important;
     }
-    /* Kill all Streamlit inner containers that constrain width */
-    .stMainBlockContainer, .stVerticalBlock, .stHorizontalBlock,
-    [data-testid="stAppViewBlockContainer"],
+    /* Prevent ALL Streamlit wrappers from constraining size or clipping */
+    .stMainBlockContainer,
+    .stVerticalBlock,
+    .stVerticalBlockBorderWrapper,
+    [data-testid="stVerticalBlock"],
     [data-testid="stVerticalBlockBorderWrapper"],
-    .element-container, .stElementContainer {
+    .stHorizontalBlock,
+    .element-container,
+    .stElementContainer,
+    [data-testid="element-container"],
+    [data-testid="stElementContainer"] {
         max-width: 100% !important;
         width: 100% !important;
+        overflow: visible !important;
+        max-height: none !important;
+        height: auto !important;
+    }
+    /* The main scrollable area */
+    .main .block-container,
+    [data-testid="stAppViewContainer"] > section > div {
+        max-width: 100% !important;
+        overflow: visible !important;
     }
     iframe {
         width: 100% !important;
-        max-width: 100% !important;
-    }
-    /* Remove default Streamlit top padding */
-    .appview-container .main .block-container {
-        padding-top: 1rem !important;
         max-width: 100% !important;
     }
 </style>
