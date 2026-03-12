@@ -135,9 +135,11 @@ def _score_example(
                     # MLPProbe: transform + linear head works per-token.
                     y = probe_obj.transform(x)
                     logits = probe_obj.head(y).squeeze(-1)
+                    scores = torch.sigmoid(logits).numpy().tolist()
                 elif hasattr(probe_obj, "linear"):
                     # LinearProbe / EMAProbe: single linear layer works per-token.
                     logits = probe_obj.linear(x).squeeze(-1)
+                    scores = torch.sigmoid(logits).numpy().tolist()
                 elif hasattr(probe_obj, "transform") and hasattr(probe_obj, "values"):
                     # AttentionProbe / MultiMaxProbe / MaxRollingMeanProbe:
                     # Compute per-token importance reflecting each probe's actual mechanism.
@@ -147,22 +149,27 @@ def _score_example(
                     if probe_type == "multimax":
                         # MultiMax: only the argmax token per head matters.
                         # Per-token importance = sum of v_h·y_j for heads where j is the argmax.
+                        # Use min-max norm (not sigmoid) so unselected tokens stay at 0.
                         argmaxes = v_scores.argmax(dim=0)  # (heads,)
-                        logits = torch.zeros(seq_len, device=x.device)
+                        raw = torch.zeros(seq_len, device=x.device)
                         for h in range(v_scores.shape[1]):
                             j = argmaxes[h].item()
-                            logits[j] += v_scores[j, h]
+                            raw[j] += v_scores[j, h]
+                        max_val = raw.max()
+                        scores = (raw / max_val).numpy().tolist() if max_val > 0 else [0.0] * seq_len
                     elif probe_type == "attention" and hasattr(probe_obj, "queries"):
                         # Attention: per-token importance = Σ_h attn_{h,j} · (v_h · y_j)
                         q_scores = y @ probe_obj.queries.T  # (seq_len, heads)
                         attn = torch.softmax(q_scores, dim=0)  # (seq_len, heads)
                         logits = (attn * v_scores).sum(dim=1)  # (seq_len,)
+                        scores = torch.sigmoid(logits).numpy().tolist()
                     else:
                         # MaxRollingMean or fallback: sum across heads.
                         logits = v_scores.sum(dim=-1)  # (seq_len,)
+                        scores = torch.sigmoid(logits).numpy().tolist()
                 else:
                     logits = probe_obj(x)
-                scores = torch.sigmoid(logits).numpy().tolist()
+                    scores = torch.sigmoid(logits).numpy().tolist()
 
             layer_scores[str(layer_idx)] = [round(s, 3) for s in scores]
 
@@ -261,12 +268,17 @@ def _score_sequence_probe(
             # Contributions: per-token importance based on argmax selection.
             # For each head, only the argmax token contributes. Score = sum of
             # v_h·y_j for heads where token j is selected.
+            # Use min-max normalization (not sigmoid) so unselected tokens stay at 0.
             argmaxes = v_raw.argmax(dim=0)  # (heads,)
             token_contrib = torch.zeros(seq_len)
             for h in range(v_raw.shape[1]):
                 j = argmaxes[h].item()
                 token_contrib[j] += v_raw[j, h].item()
-            contributions = [round(float(v), 3) for v in torch.sigmoid(token_contrib).tolist()]
+            # Normalize: 0 for unselected, up to 1.0 for strongest.
+            max_val = token_contrib.max()
+            if max_val > 0:
+                token_contrib = token_contrib / max_val
+            contributions = [round(float(v), 3) for v in token_contrib.tolist()]
 
         elif probe_type == "max_rolling_mean":
             y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
