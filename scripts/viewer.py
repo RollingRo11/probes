@@ -584,9 +584,7 @@ def score_color(s: float) -> str:
     r = int(r0 + f * (r1 - r0))
     g = int(g0 + f * (g1 - g0))
     b = int(b0 + f * (b1 - b0))
-    # Scale alpha with score so low values fade out.
-    alpha = round(0.1 + 0.7 * s, 2)  # 0.1 at score=0, 0.8 at score=1
-    return f"rgba({r},{g},{b},{alpha})"
+    return f"rgba({r},{g},{b},0.75)"
 
 # ---------------------------------------------------------------------------
 # Header
