@@ -164,6 +164,182 @@ def score_per_token(
     return scores
 
 
+def _build_html(
+    token_strs: list[str],
+    layers: list[int],
+    scores: dict[int, list[float]],
+    probe_type: str,
+    model_id: str,
+    label: int | None,
+) -> str:
+    """Build self-contained interactive HTML token viewer."""
+    import html as html_mod
+
+    # Prepare data for embedding.
+    tokens_json = json.dumps([html_mod.escape(t) for t in token_strs])
+    raw_tokens_json = json.dumps(token_strs)
+    layers_json = json.dumps(layers)
+    scores_json = json.dumps({str(l): scores[l] for l in layers})
+
+    label_str = ""
+    if label is not None:
+        label_str = f' &mdash; label={label} ({"AWARE" if label == 1 else "NOT AWARE"})'
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Probe Token Viewer</title>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }}
+h1 {{ font-size: 16px; margin-bottom: 4px; color: #fff; }}
+.subtitle {{ font-size: 12px; color: #888; margin-bottom: 16px; }}
+.controls {{ display: flex; align-items: center; gap: 16px; margin-bottom: 16px; background: #16213e; padding: 12px 16px; border-radius: 8px; position: sticky; top: 0; z-index: 10; }}
+.controls label {{ font-size: 13px; white-space: nowrap; }}
+.controls input[type=range] {{ flex: 1; max-width: 400px; accent-color: #e94560; }}
+.layer-display {{ font-size: 14px; font-weight: bold; color: #e94560; min-width: 70px; }}
+.legend {{ display: flex; align-items: center; gap: 4px; font-size: 11px; color: #888; }}
+.legend-bar {{ width: 120px; height: 12px; border-radius: 3px; background: linear-gradient(to right, #1a5276, #2ecc71, #f39c12, #e74c3c); }}
+#token-container {{ line-height: 2.2; padding: 16px; background: #0f3460; border-radius: 8px; margin-bottom: 16px; }}
+.tok {{ display: inline; padding: 2px 1px; border-radius: 3px; cursor: pointer; transition: outline 0.1s; font-size: 13px; white-space: pre-wrap; }}
+.tok:hover {{ outline: 2px solid #fff; outline-offset: 1px; }}
+.tok.selected {{ outline: 2px solid #e94560; outline-offset: 1px; }}
+#detail-panel {{ background: #16213e; border-radius: 8px; padding: 16px; min-height: 200px; }}
+#detail-panel h2 {{ font-size: 14px; margin-bottom: 12px; color: #e94560; }}
+.detail-token {{ font-size: 16px; background: #0f3460; padding: 4px 8px; border-radius: 4px; margin-bottom: 12px; display: inline-block; }}
+#bar-chart {{ display: flex; align-items: flex-end; gap: 2px; height: 150px; }}
+.bar-group {{ display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }}
+.bar {{ width: 100%; border-radius: 2px 2px 0 0; transition: height 0.15s; cursor: pointer; min-height: 1px; }}
+.bar-label {{ font-size: 9px; color: #666; margin-top: 2px; writing-mode: vertical-lr; text-orientation: mixed; }}
+.bar:hover {{ outline: 1px solid #fff; }}
+#detail-info {{ font-size: 12px; color: #aaa; margin-top: 8px; }}
+.empty-state {{ color: #555; font-size: 13px; padding: 40px; text-align: center; }}
+</style>
+</head>
+<body>
+
+<h1>Per-token Probe Scores ({html_mod.escape(probe_type)}){label_str}</h1>
+<div class="subtitle">{html_mod.escape(model_id)} &middot; <span id="n-tokens"></span> tokens &middot; <span id="n-layers"></span> layers</div>
+
+<div class="controls">
+    <label for="layer-slider">Layer:</label>
+    <input type="range" id="layer-slider" min="0" max="0" value="0">
+    <span class="layer-display" id="layer-label">L0</span>
+    <div class="legend">
+        <span>0</span>
+        <div class="legend-bar"></div>
+        <span>1</span>
+    </div>
+</div>
+
+<div id="token-container"></div>
+
+<div id="detail-panel">
+    <div class="empty-state">Click any token to see its score across all layers</div>
+</div>
+
+<script>
+const tokens = {tokens_json};
+const rawTokens = {raw_tokens_json};
+const layers = {layers_json};
+const scores = {scores_json};
+const nTokens = tokens.length;
+const nLayers = layers.length;
+
+document.getElementById('n-tokens').textContent = nTokens;
+document.getElementById('n-layers').textContent = nLayers;
+
+// Color interpolation: blue(0) -> green(0.35) -> yellow(0.6) -> red(1)
+function scoreColor(s) {{
+    const stops = [
+        [0.0,  26,  82, 118],
+        [0.35, 46, 204, 113],
+        [0.6, 243, 156,  18],
+        [1.0, 231,  76,  60],
+    ];
+    let i = 0;
+    while (i < stops.length - 2 && s > stops[i+1][0]) i++;
+    const [t0, r0, g0, b0] = stops[i];
+    const [t1, r1, g1, b1] = stops[i+1];
+    const f = (s - t0) / (t1 - t0);
+    const r = Math.round(r0 + f * (r1 - r0));
+    const g = Math.round(g0 + f * (g1 - g0));
+    const b = Math.round(b0 + f * (b1 - b0));
+    // Darker background, use alpha for readability
+    return `rgba(${{r}},${{g}},${{b}},0.7)`;
+}}
+
+// Build token spans.
+const container = document.getElementById('token-container');
+const tokenEls = [];
+for (let j = 0; j < nTokens; j++) {{
+    const span = document.createElement('span');
+    span.className = 'tok';
+    span.dataset.idx = j;
+    span.innerHTML = tokens[j];
+    span.addEventListener('click', () => selectToken(j));
+    container.appendChild(span);
+    tokenEls.push(span);
+}}
+
+// Layer slider.
+const slider = document.getElementById('layer-slider');
+slider.max = nLayers - 1;
+// Default to best layer (layer 20 = index for layer 20).
+const defaultLayerIdx = layers.indexOf(20);
+slider.value = defaultLayerIdx >= 0 ? defaultLayerIdx : Math.floor(nLayers / 2);
+const layerLabel = document.getElementById('layer-label');
+
+function updateColors() {{
+    const li = parseInt(slider.value);
+    const layer = layers[li];
+    layerLabel.textContent = 'L' + layer;
+    const layerScores = scores[String(layer)];
+    for (let j = 0; j < nTokens; j++) {{
+        tokenEls[j].style.backgroundColor = scoreColor(layerScores[j]);
+    }}
+}}
+
+slider.addEventListener('input', updateColors);
+updateColors();
+
+// Token detail panel.
+let selectedIdx = null;
+
+function selectToken(j) {{
+    if (selectedIdx !== null) tokenEls[selectedIdx].classList.remove('selected');
+    selectedIdx = j;
+    tokenEls[j].classList.add('selected');
+
+    const panel = document.getElementById('detail-panel');
+    const tokenScores = layers.map(l => scores[String(l)][j]);
+    const maxScore = Math.max(...tokenScores);
+    const maxLayer = layers[tokenScores.indexOf(maxScore)];
+
+    let html = '<h2>Token ' + j + '</h2>';
+    html += '<div class="detail-token">' + tokens[j] + '</div>';
+    html += '<div id="bar-chart">';
+    for (let i = 0; i < nLayers; i++) {{
+        const s = tokenScores[i];
+        const h = Math.max(1, s * 140);
+        const color = scoreColor(s);
+        html += '<div class="bar-group">';
+        html += '<div class="bar" style="height:' + h + 'px;background:' + color + '" ';
+        html += 'title="Layer ' + layers[i] + ': ' + s.toFixed(4) + '">';
+        html += '</div>';
+        if (i % 4 === 0) html += '<div class="bar-label">L' + layers[i] + '</div>';
+        html += '</div>';
+    }}
+    html += '</div>';
+    html += '<div id="detail-info">Peak: <b>L' + maxLayer + '</b> (score ' + maxScore.toFixed(4) + ') &middot; Raw token: <code>' + JSON.stringify(rawTokens[j]) + '</code></div>';
+    panel.innerHTML = html;
+}}
+</script>
+</body>
+</html>"""
+
+
 def visualize_tokens(
     text: str,
     run_dir: str,
@@ -172,9 +348,7 @@ def visualize_tokens(
     max_length: int = 2048,
     label: int | None = None,
 ) -> str:
-    """Generate per-token probe heatmap. Returns path to output HTML."""
-    import plotly.graph_objects as go
-
+    """Generate interactive per-token probe viewer. Returns path to output HTML."""
     run_dir = Path(run_dir)
     import yaml
     cfg = yaml.safe_load((run_dir / "config.yaml").read_text())
@@ -217,64 +391,23 @@ def visualize_tokens(
             activations=activations[layer_idx],
             hidden_size=hidden_size,
         )
-        layer_scores[layer_idx] = scores
+        layer_scores[layer_idx] = scores.tolist()
 
     if not layer_scores:
         print(f"[viz] No trained {probe_type} probes found in {results_dir}")
         sys.exit(1)
 
     layers = sorted(layer_scores.keys())
-    heatmap = np.stack([layer_scores[l] for l in layers], axis=0)  # (n_layers, seq_len)
+    print(f"[viz] {len(layers)} layers × {seq_len} tokens")
 
-    print(f"[viz] Heatmap shape: {heatmap.shape} ({len(layers)} layers × {seq_len} tokens)")
-
-    # Truncate token strings for display (keep first 20 chars).
-    display_tokens = [t.replace("\n", "\\n")[:20] for t in token_strs]
-
-    # Build hover text with full token and score.
-    hover_text = []
-    for i, layer in enumerate(layers):
-        row = []
-        for j in range(seq_len):
-            tok_repr = repr(token_strs[j])
-            row.append(
-                f"Layer {layer}<br>"
-                f"Pos {j}: {tok_repr}<br>"
-                f"Score: {heatmap[i, j]:.4f}"
-            )
-        hover_text.append(row)
-
-    title = f"Per-token probe scores ({probe_type})"
-    if label is not None:
-        title += f" — label={label} ({'AWARE' if label == 1 else 'NOT AWARE'})"
-    title += f"<br><sub>{model_id} | {seq_len} tokens</sub>"
-
-    fig = go.Figure(data=go.Heatmap(
-        z=heatmap,
-        x=list(range(seq_len)),
-        y=[f"L{l}" for l in layers],
-        text=hover_text,
-        hoverinfo="text",
-        colorscale="RdYlGn",
-        reversescale=True,  # Red = high score (aware), green = low
-        colorbar=dict(title="Score"),
-        zmin=0,
-        zmax=1,
-    ))
-
-    fig.update_layout(
-        title=title,
-        xaxis_title="Token position",
-        yaxis_title="Layer",
-        height=max(400, 20 * len(layers) + 150),
-        width=max(800, 4 * seq_len + 200),
-        xaxis=dict(
-            tickmode="array",
-            tickvals=list(range(0, seq_len, max(1, seq_len // 50))),
-            ticktext=[display_tokens[i] for i in range(0, seq_len, max(1, seq_len // 50))],
-            tickangle=45,
-        ),
-        yaxis=dict(autorange="reversed"),
+    # Build HTML.
+    html = _build_html(
+        token_strs=token_strs,
+        layers=layers,
+        scores=layer_scores,
+        probe_type=probe_type,
+        model_id=model_id,
+        label=label,
     )
 
     # Output path.
@@ -283,10 +416,10 @@ def visualize_tokens(
     else:
         out = run_dir / f"viz_{probe_type}_tokens.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.write_html(str(out))
-    print(f"[viz] Saved heatmap → {out}")
+    out.write_text(html)
+    print(f"[viz] Saved → {out}")
 
-    # Also save raw scores as JSON for further analysis.
+    # Also save raw scores as JSON.
     json_out = out.with_suffix(".json")
     with open(json_out, "w") as f:
         json.dump({
@@ -295,7 +428,7 @@ def visualize_tokens(
             "num_tokens": seq_len,
             "layers": layers,
             "token_strs": token_strs,
-            "scores": {str(l): layer_scores[l].tolist() for l in layers},
+            "scores": {str(l): layer_scores[l] for l in layers},
             "label": label,
             "text_preview": text[:200],
         }, f, indent=2)
@@ -347,12 +480,30 @@ uv run python scripts/visualize_tokens.py \\
     print(f"Log: {log_path}")
 
 
+def rebuild_from_json(json_path: str, output_path: str | None = None) -> str:
+    """Rebuild interactive HTML from a previously saved JSON scores file."""
+    data = json.loads(Path(json_path).read_text())
+    html = _build_html(
+        token_strs=data["token_strs"],
+        layers=data["layers"],
+        scores={int(k): v for k, v in data["scores"].items()},
+        probe_type=data["probe_type"],
+        model_id=data["model_id"],
+        label=data.get("label"),
+    )
+    out = Path(output_path) if output_path else Path(json_path).with_suffix(".html")
+    out.write_text(html)
+    print(f"[viz] Rebuilt → {out}")
+    return str(out)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Per-token probe heatmap visualization")
     text_group = parser.add_mutually_exclusive_group(required=True)
     text_group.add_argument("--text", help="Text to visualize")
     text_group.add_argument("--text-file", help="Read text from a file")
     text_group.add_argument("--dataset", help="JSONL dataset path (use with --index)")
+    text_group.add_argument("--from-json", help="Rebuild HTML from existing JSON scores file (no GPU needed)")
 
     parser.add_argument("--index", type=int, default=0, help="Example index in dataset (default: 0)")
     parser.add_argument("--run-dir", default="logs/20260311_232544_olmo3-7b-think")
@@ -360,6 +511,10 @@ def main():
     parser.add_argument("--output", help="Output HTML path")
     parser.add_argument("--slurm", action="store_true", help="Submit as SLURM job")
     args = parser.parse_args()
+
+    if args.from_json:
+        rebuild_from_json(args.from_json, args.output)
+        return
 
     # Resolve text input.
     label = None
