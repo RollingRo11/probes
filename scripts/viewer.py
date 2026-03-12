@@ -410,6 +410,15 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp { background-color: #1e1e1e; }
+    /* Hide Streamlit header/toolbar/footer */
+    header[data-testid="stHeader"],
+    .stDeployButton,
+    #MainMenu,
+    footer,
+    .stDecoration {
+        display: none !important;
+        height: 0 !important;
+    }
     .block-container,
     .stMainBlockContainer,
     [data-testid="stAppViewBlockContainer"] {
@@ -417,7 +426,13 @@ st.markdown("""
         width: 100% !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
-        padding-top: 1rem !important;
+        padding-top: 0 !important;
+    }
+    /* Kill top margin/padding on the main view */
+    [data-testid="stAppViewContainer"],
+    [data-testid="stAppViewContainer"] > section {
+        padding-top: 0 !important;
+        margin-top: 0 !important;
     }
     /* Prevent ALL Streamlit wrappers from constraining size or clipping */
     .stMainBlockContainer,
