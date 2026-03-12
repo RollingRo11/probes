@@ -186,15 +186,38 @@ def _score_sequence_probe(
             q_raw = y @ probe_obj.queries.T  # (seq_len, heads)
             v_raw = y @ probe_obj.values.T   # (seq_len, heads)
 
-            # Cumulative: for each prefix [0..j], compute full attention output.
-            # Use cumsum trick for efficient computation.
-            for j in range(seq_len):
-                q_prefix = q_raw[:j + 1]  # (j+1, heads)
-                v_prefix = v_raw[:j + 1]  # (j+1, heads)
-                attn = torch.softmax(q_prefix, dim=0)  # (j+1, heads) - softmax over positions
-                # Σ_h Σ_j attn_j * v_j
-                logit = (attn * v_prefix).sum()
-                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
+            # Cumulative: batched with causal mask when feasible, else subsampled.
+            MAX_BATCH = 512  # Cap to avoid O(n²) memory blowup.
+            if seq_len <= MAX_BATCH:
+                mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
+                q_exp = q_raw.unsqueeze(0).expand(seq_len, -1, -1).clone()
+                v_exp = v_raw.unsqueeze(0).expand(seq_len, -1, -1)
+                q_exp[~mask] = float('-inf')
+                attn = torch.softmax(q_exp, dim=1)
+                attn[attn != attn] = 0
+                logits = (attn * v_exp).sum(dim=1).sum(dim=1)
+                cumulative = [round(float(v), 3) for v in torch.sigmoid(logits).tolist()]
+            else:
+                # Subsampled: compute at ~MAX_BATCH evenly-spaced positions, interpolate.
+                step = max(1, seq_len // MAX_BATCH)
+                sample_idxs = list(range(0, seq_len, step))
+                if sample_idxs[-1] != seq_len - 1:
+                    sample_idxs.append(seq_len - 1)
+                sample_vals = []
+                for j in sample_idxs:
+                    a = torch.softmax(q_raw[:j + 1], dim=0)
+                    logit = (a * v_raw[:j + 1]).sum()
+                    sample_vals.append(float(torch.sigmoid(logit).item()))
+                # Linear interpolation to fill all positions.
+                cumulative = [0.0] * seq_len
+                for k in range(len(sample_idxs)):
+                    cumulative[sample_idxs[k]] = round(sample_vals[k], 3)
+                for k in range(len(sample_idxs) - 1):
+                    i0, i1 = sample_idxs[k], sample_idxs[k + 1]
+                    v0, v1 = sample_vals[k], sample_vals[k + 1]
+                    for i in range(i0 + 1, i1):
+                        t = (i - i0) / (i1 - i0)
+                        cumulative[i] = round(v0 + t * (v1 - v0), 3)
 
             # Contributions: attention weights on full sequence.
             attn_full = torch.softmax(q_raw, dim=0)  # (seq, heads)
@@ -205,14 +228,10 @@ def _score_sequence_probe(
             y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
             v_raw = y @ probe_obj.values.T  # (seq_len, heads)
 
-            # Cumulative: running max over positions, sum over heads.
-            running_max = v_raw[0].clone()  # (heads,)
-            logit = running_max.sum()
-            cumulative[0] = round(float(torch.sigmoid(logit).item()), 3)
-            for j in range(1, seq_len):
-                running_max = torch.max(running_max, v_raw[j])
-                logit = running_max.sum()
-                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
+            # Cumulative: vectorized running max.
+            running_max = torch.cummax(v_raw, dim=0).values  # (seq, heads)
+            logits = running_max.sum(dim=1)  # (seq,)
+            cumulative = [round(float(v), 3) for v in torch.sigmoid(logits).tolist()]
 
             # Contributions: max_h(v_h · y_j) per position, sigmoid'd.
             max_v = v_raw.max(dim=1).values  # (seq,)
@@ -225,23 +244,8 @@ def _score_sequence_probe(
             n_heads = probe_obj.n_heads
             w = min(probe_obj.window, seq_len)
 
-            # Cumulative: for prefix [0..j], compute max-rolling-mean.
-            for j in range(seq_len):
-                prefix_len = j + 1
-                w_j = min(w, prefix_len)
-                n_win = prefix_len - w_j + 1
-                best_val = torch.tensor(float('-inf'))
-                head_maxes = torch.zeros(n_heads)
-                for t in range(n_win):
-                    q_win = q_raw[t:t + w_j]  # (w_j, heads)
-                    v_win = v_raw[t:t + w_j]  # (w_j, heads)
-                    attn_win = torch.softmax(q_win, dim=0)  # (w_j, heads)
-                    win_val = (attn_win * v_win).sum(dim=0)  # (heads,)
-                    head_maxes = torch.max(head_maxes, win_val)
-                logit = head_maxes.sum()
-                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
-
-            # Contributions: attention weight in peak windows.
+            # Contributions only (skip cumulative — too expensive for O(n²) windows).
+            # Compute all window scores.
             n_windows = seq_len - w + 1
             window_vals = torch.zeros(n_heads, max(1, n_windows))
             for t in range(n_windows):
@@ -250,6 +254,19 @@ def _score_sequence_probe(
                 attn_win = torch.softmax(q_win, dim=0)
                 window_vals[:, t] = (attn_win * v_win).sum(dim=0)
 
+            # Cumulative: running max of window scores (only valid from position w-1 onward).
+            if n_windows > 0:
+                running_max_wins = torch.cummax(window_vals, dim=1).values  # (heads, n_windows)
+                cum_logits = running_max_wins.sum(dim=0)  # (n_windows,)
+                cum_sig = torch.sigmoid(cum_logits).tolist()
+                # Pad start: for positions < w, use the probe output on prefix.
+                # Approximate: repeat first valid score for early positions.
+                first_val = cum_sig[0] if cum_sig else 0.5
+                cumulative = [round(first_val, 3)] * (w - 1) + [round(v, 3) for v in cum_sig]
+            else:
+                cumulative = [0.5] * seq_len
+
+            # Contributions: attention weight in peak windows.
             token_importance = torch.zeros(seq_len)
             peak_windows = window_vals.max(dim=-1).indices  # (heads,)
             for h in range(n_heads):
