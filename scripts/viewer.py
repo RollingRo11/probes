@@ -959,16 +959,7 @@ window.addEventListener('resize', drawChart);
 </html>
 """
 
-# Generous height so the iframe never clips the content.
-# The component's own body has no extra whitespace, and overflow:visible
-# on Streamlit wrappers means no nested scrollbar.
-chars_per_line = 140
-total_chars = sum(len(t) for t in token_strs)
-est_lines = max(5, total_chars // chars_per_line)
-token_area_height = int(est_lines * 34)
-detail_height = 320
-component_height = token_area_height + detail_height + 40
-clicked = components.html(component_html, height=component_height, scrolling=False)
+clicked = components.html(component_html, height=4000, scrolling=False)
 
 # Update session state if a token was clicked.
 if clicked is not None and isinstance(clicked, (int, float)):
