@@ -88,6 +88,315 @@ def load_example(data_dir: str, filename: str):
         return json.load(f)
 
 # ---------------------------------------------------------------------------
+# Analysis helpers
+# ---------------------------------------------------------------------------
+
+@st.cache_data
+def load_eval_results(run_dir: str) -> dict[str, list[dict]]:
+    """Load all eval_*.json files from the run directory."""
+    import glob
+    results = {}
+    for path in sorted(glob.glob(f"{run_dir}/eval_*.json")):
+        name = Path(path).stem.removeprefix("eval_")
+        with open(path) as f:
+            data = json.load(f)
+        results[name] = data.get("results", [])
+    return results
+
+
+@st.cache_data
+def load_training_metrics(run_dir: str) -> list[dict]:
+    """Load per-layer per-probe training metrics."""
+    import glob
+    metrics = []
+    results_dir = Path(run_dir) / "results"
+    if not results_dir.exists():
+        return metrics
+    for metrics_path in sorted(results_dir.glob("layer_*/*/metrics.json")):
+        parts = metrics_path.parts
+        layer = int(parts[-3].split("_")[1])
+        probe_type = parts[-2]
+        with open(metrics_path) as f:
+            m = json.load(f)
+        m["layer"] = layer
+        m["probe_type"] = probe_type
+        metrics.append(m)
+    return metrics
+
+
+@st.cache_data
+def compute_dataset_stats(
+    data_dir: str, manifest_data: dict, max_examples: int = 200,
+) -> dict:
+    """Compute aggregate per-token score statistics across examples.
+
+    Samples up to max_examples for speed. Returns stats per probe per layer.
+    """
+    import gzip
+    import numpy as np
+    data_dir = Path(data_dir)
+    examples = manifest_data["examples"][:max_examples]
+    probe_types = manifest_data["probe_types"]
+    layers = manifest_data["layers"]
+
+    # Accumulate: for each (probe, layer), collect mean-of-token-scores per example.
+    stats: dict[str, dict[str, list[float]]] = {
+        pt: {str(l): [] for l in layers} for pt in probe_types
+    }
+
+    for ex in examples:
+        gz_path = data_dir / (ex["file"] + ".gz")
+        raw_path = data_dir / ex["file"]
+        if gz_path.exists():
+            with gzip.open(gz_path, "rt") as f:
+                data = json.load(f)
+        elif raw_path.exists():
+            with open(raw_path) as f:
+                data = json.load(f)
+        else:
+            continue
+
+        for pt in probe_types:
+            pt_scores = data["scores"].get(pt, {})
+            for l in layers:
+                arr = pt_scores.get(str(l), [])
+                if arr:
+                    stats[pt][str(l)].append(float(np.mean(arr)))
+
+    # Summarise.
+    summary = {}
+    for pt in probe_types:
+        pt_summary = {}
+        for l in layers:
+            vals = stats[pt][str(l)]
+            if vals:
+                arr = np.array(vals)
+                pt_summary[str(l)] = {
+                    "mean": float(np.mean(arr)),
+                    "std": float(np.std(arr)),
+                    "median": float(np.median(arr)),
+                    "p90": float(np.percentile(arr, 90)),
+                    "above_05": float(np.mean(arr > 0.5)),
+                }
+        summary[pt] = pt_summary
+
+    return {"summary": summary, "n_sampled": len(examples)}
+
+
+def _render_analysis(data_dir: str, run_dir: str, manifest: dict, dataset_name: str):
+    """Render the analysis pane."""
+    import numpy as np
+
+    st.markdown(f"## Analysis: **{dataset_name}**")
+    st.caption(
+        f"{manifest['model_id']} · {manifest['n_examples']} examples · "
+        f"{len(manifest['probe_types'])} probes · {len(manifest['layers'])} layers"
+    )
+
+    # --- Training metrics ---
+    train_metrics = load_training_metrics(run_dir)
+    if train_metrics:
+        st.markdown("### Training Metrics (held-out test set)")
+        # Build a table: rows = layers, columns = probes, cells = AUROC
+        probe_types = manifest["probe_types"]
+        layers = manifest["layers"]
+        header = "| Layer | " + " | ".join(probe_types) + " |"
+        sep = "|---:|" + "|".join(["---:"] * len(probe_types)) + "|"
+        rows = []
+        # Index training metrics by (layer, probe_type)
+        tm_idx = {(m["layer"], m["probe_type"]): m for m in train_metrics}
+        best_auroc = 0
+        best_cell = ""
+        for l in layers:
+            cells = []
+            for pt in probe_types:
+                m = tm_idx.get((l, pt))
+                if m:
+                    auroc = m.get("auroc", 0)
+                    if auroc > best_auroc:
+                        best_auroc = auroc
+                        best_cell = f"{pt} L{l}"
+                    cells.append(f"{auroc:.3f}")
+                else:
+                    cells.append("—")
+            rows.append(f"| {l} | " + " | ".join(cells) + " |")
+        st.markdown(f"Best: **{best_cell}** ({best_auroc:.4f} AUROC)")
+        # Show only a few key layers to avoid huge table
+        key_layers = [0, 4, 8, 12, 16, 20, 24, 28, 31]
+        key_rows = [r for l, r in zip(layers, rows) if l in key_layers]
+        st.markdown(header + "\n" + sep + "\n" + "\n".join(key_rows))
+
+    # --- Cross-dataset eval results ---
+    eval_results = load_eval_results(run_dir)
+    if eval_results:
+        st.markdown("### Cross-Dataset Eval (AUROC)")
+        for eval_name, results in eval_results.items():
+            if not results:
+                continue
+            st.markdown(f"**{eval_name}** ({len(results)} entries)")
+            # Find best AUROC per probe type
+            probe_best: dict[str, tuple[float, int]] = {}
+            for r in results:
+                pt = r["probe_type"]
+                auroc = r.get("auroc", 0)
+                if pt not in probe_best or auroc > probe_best[pt][0]:
+                    probe_best[pt] = (auroc, r["layer"])
+            cols = st.columns(len(probe_best))
+            for col, (pt, (auroc, layer)) in zip(cols, sorted(probe_best.items())):
+                col.metric(pt, f"{auroc:.3f}", f"Layer {layer}")
+
+    # --- Per-token score stats from viz data ---
+    st.markdown("### Per-Token Score Distribution")
+    st.caption("Mean of per-token scores across examples (sampled up to 200)")
+    ds_stats = compute_dataset_stats(data_dir, manifest)
+    summary = ds_stats["summary"]
+    st.caption(f"Sampled {ds_stats['n_sampled']} / {manifest['n_examples']} examples")
+
+    probe_types = manifest["probe_types"]
+    layers = manifest["layers"]
+
+    # Heatmap: mean score per (probe, layer) using an HTML table
+    selected_stat = st.selectbox(
+        "Statistic", ["mean", "median", "p90", "above_05"], index=0,
+        format_func=lambda x: {
+            "mean": "Mean score",
+            "median": "Median score",
+            "p90": "90th percentile",
+            "above_05": "% examples > 0.5",
+        }.get(x, x),
+    )
+
+    # Build HTML heatmap table
+    def val_color(v: float) -> str:
+        # Blue to red scale
+        r = int(min(255, v * 2 * 255))
+        b = int(min(255, (1 - v) * 2 * 255))
+        g = int(min(255, (1 - abs(v - 0.5) * 2) * 200))
+        return f"rgb({r},{g},{b})"
+
+    html_parts = ['<table style="border-collapse:collapse;font-size:12px;font-family:monospace;width:100%;">']
+    html_parts.append("<tr><th style='padding:4px 8px;color:#aaa;'>Layer</th>")
+    for pt in probe_types:
+        html_parts.append(f"<th style='padding:4px 8px;color:#ccc;'>{pt}</th>")
+    html_parts.append("</tr>")
+
+    key_layers = [l for l in layers if l % 2 == 0 or l == layers[-1]]
+    for l in key_layers:
+        html_parts.append(f"<tr><td style='padding:3px 8px;color:#aaa;text-align:right;'>{l}</td>")
+        for pt in probe_types:
+            s = summary.get(pt, {}).get(str(l), {})
+            v = s.get(selected_stat, 0)
+            bg = val_color(v)
+            display = f"{v:.3f}" if selected_stat != "above_05" else f"{v:.0%}"
+            html_parts.append(
+                f"<td style='padding:3px 8px;text-align:center;background:{bg};color:#fff;'>{display}</td>"
+            )
+        html_parts.append("</tr>")
+    html_parts.append("</table>")
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
+
+    # --- Score distribution chart per probe at best layer ---
+    st.markdown("### Score by Layer (best probe overview)")
+    # For each probe, plot mean score across layers as a line
+    chart_html = _build_analysis_chart(summary, probe_types, layers, selected_stat)
+    components.html(chart_html, height=350, scrolling=False)
+
+
+def _build_analysis_chart(
+    summary: dict, probe_types: list[str], layers: list[int], stat: str,
+) -> str:
+    """Build an HTML canvas chart showing stat across layers for each probe."""
+    probe_colors = {
+        'linear': '#e94560',
+        'ema': '#f39c12',
+        'mlp': '#2ecc71',
+        'attention': '#3498db',
+        'multimax': '#9b59b6',
+        'max_rolling_mean': '#e67e22',
+        'mean_diff': '#95a5a6',
+    }
+    # Prepare series data
+    series = {}
+    for pt in probe_types:
+        vals = []
+        for l in layers:
+            s = summary.get(pt, {}).get(str(l), {})
+            vals.append(s.get(stat, 0))
+        series[pt] = vals
+
+    series_json = json.dumps(series)
+    layers_json = json.dumps(layers)
+    colors_json = json.dumps(probe_colors)
+
+    return f"""
+<html><body style="margin:0;background:#1e1e1e;">
+<canvas id="c" style="width:100%;height:320px;"></canvas>
+<script>
+const series = {series_json};
+const layers = {layers_json};
+const colors = {colors_json};
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+
+function draw() {{
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    const pad = {{ left: 50, right: 20, top: 20, bottom: 30 }};
+    const pW = W - pad.left - pad.right;
+    const pH = H - pad.top - pad.bottom;
+    const xScale = i => pad.left + (i / (layers.length - 1)) * pW;
+    const yScale = v => pad.top + (1 - v) * pH;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid
+    ctx.strokeStyle = '#333'; ctx.lineWidth = 0.5;
+    for (let v = 0; v <= 1; v += 0.25) {{
+        ctx.beginPath(); ctx.moveTo(pad.left, yScale(v));
+        ctx.lineTo(W - pad.right, yScale(v)); ctx.stroke();
+    }}
+    ctx.fillStyle = '#666'; ctx.font = '10px monospace'; ctx.textAlign = 'right';
+    for (let v = 0; v <= 1; v += 0.25) ctx.fillText(v.toFixed(2), pad.left - 4, yScale(v) + 3);
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(layers.length / 8));
+    for (let i = 0; i < layers.length; i += step)
+        ctx.fillText('L' + layers[i], xScale(i), H - 6);
+
+    // Lines
+    Object.entries(series).forEach(([pt, vals]) => {{
+        ctx.strokeStyle = colors[pt] || '#888';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        vals.forEach((v, i) => {{
+            const x = xScale(i), y = yScale(Math.max(0, Math.min(1, v)));
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }});
+        ctx.stroke();
+    }});
+
+    // Legend
+    let lx = pad.left;
+    ctx.font = '11px monospace';
+    Object.entries(series).forEach(([pt]) => {{
+        ctx.fillStyle = colors[pt] || '#888';
+        ctx.fillRect(lx, 4, 14, 3);
+        ctx.fillStyle = '#aaa';
+        ctx.textAlign = 'left';
+        ctx.fillText(pt, lx + 18, 10);
+        lx += ctx.measureText(pt).width + 34;
+    }});
+}}
+draw();
+window.addEventListener('resize', draw);
+</script></body></html>
+"""
+
+
+# ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 
@@ -159,6 +468,9 @@ manifest = load_manifest(str(DATA_DIR))
 st.sidebar.caption(f"{manifest['model_id']}")
 st.sidebar.caption(f"{manifest['n_examples']} examples from {Path(manifest['dataset']).name}")
 
+# View mode.
+view_mode = st.sidebar.radio("View", ["Token Viewer", "Analysis"], index=0)
+
 # Filter by label.
 label_filter = st.sidebar.radio("Filter by label", ["All", "Positive (1)", "Negative (0)"], index=0)
 filtered = manifest["examples"]
@@ -198,9 +510,17 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------------------------
-# Load selected example
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ANALYSIS VIEW
+# ===========================================================================
+
+if view_mode == "Analysis":
+    _render_analysis(str(DATA_DIR), str(RUN_DIR), manifest, selected_dataset)
+    st.stop()
+
+# ===========================================================================
+# TOKEN VIEWER (below here)
+# ===========================================================================
 
 example = load_example(str(DATA_DIR), filtered[selected_idx]["file"])
 token_strs = example["token_strs"]
