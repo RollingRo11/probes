@@ -82,6 +82,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Full-width layout with dark gray background.
+st.markdown("""
+<style>
+    .stApp { background-color: #1e1e1e; }
+    .block-container {
+        max-width: 100% !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+        padding-top: 1rem !important;
+    }
+    iframe { width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------------------
 # Sidebar controls
 # ---------------------------------------------------------------------------
@@ -516,9 +530,13 @@ window.addEventListener('resize', drawChart);
 </html>
 """
 
-# Calculate height based on content.
-# Rough estimate: token container ~300px + detail panel ~280px + padding.
-estimated_height = 600
+# Height scales with token count: ~2.4 line-height * 13px font * wrapped lines + detail panel.
+chars_per_line = 120  # rough estimate of characters per line
+total_chars = sum(len(t) for t in token_strs)
+est_lines = max(10, total_chars // chars_per_line)
+token_area_height = int(est_lines * 32)  # ~32px per line with line-height 2.4
+detail_height = 300
+estimated_height = token_area_height + detail_height
 clicked = components.html(component_html, height=estimated_height, scrolling=True)
 
 # Update session state if a token was clicked.
