@@ -22,37 +22,53 @@ import streamlit.components.v1 as components
 # Args (parsed from sys.argv after Streamlit's "--" separator)
 # ---------------------------------------------------------------------------
 
-def get_data_dir() -> Path:
-    """Resolve data directory from CLI args, env var, or default."""
+def get_run_dir() -> Path:
+    """Resolve training run directory."""
     import os
-    # 1. CLI arg (for local use: streamlit run viewer.py -- --data-dir ...)
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--run-dir", default=None)
     args, _ = parser.parse_known_args()
+    if args.run_dir:
+        return Path(args.run_dir)
     if args.data_dir:
-        return Path(args.data_dir)
-    # 2. Environment variable (for Streamlit Cloud)
+        # Legacy: --data-dir points to a viz_* subdir; derive run dir from parent.
+        return Path(args.data_dir).parent
     if os.environ.get("PROBE_DATA_DIR"):
-        return Path(os.environ["PROBE_DATA_DIR"])
-    # 3. Default: look relative to repo root
+        return Path(os.environ["PROBE_DATA_DIR"]).parent
     repo_root = Path(__file__).resolve().parent.parent
-    default = repo_root / "logs" / "20260311_232544_olmo3-7b-think" / "viz_sad"
+    default = repo_root / "logs" / "20260311_232544_olmo3-7b-think"
     if default.exists():
         return default
-    st.error("No data directory found. Set --data-dir or PROBE_DATA_DIR env var.")
+    st.error("No run directory found. Set --run-dir or PROBE_DATA_DIR env var.")
     st.stop()
 
-DATA_DIR = get_data_dir()
+RUN_DIR = get_run_dir()
+
+
+def discover_datasets() -> dict[str, Path]:
+    """Find all viz_* subdirectories in the run dir."""
+    datasets = {}
+    for d in sorted(RUN_DIR.iterdir()):
+        if d.is_dir() and d.name.startswith("viz_"):
+            manifest = d / "manifest.json.gz"
+            if not manifest.exists():
+                manifest = d / "manifest.json"
+            if manifest.exists():
+                label = d.name.removeprefix("viz_")
+                datasets[label] = d
+    return datasets
 
 # ---------------------------------------------------------------------------
 # Load data
 # ---------------------------------------------------------------------------
 
 @st.cache_data
-def load_manifest():
+def load_manifest(data_dir: str):
     import gzip
-    gz_path = DATA_DIR / "manifest.json.gz"
-    raw_path = DATA_DIR / "manifest.json"
+    data_dir = Path(data_dir)
+    gz_path = data_dir / "manifest.json.gz"
+    raw_path = data_dir / "manifest.json"
     if gz_path.exists():
         with gzip.open(gz_path, "rt") as f:
             return json.load(f)
@@ -60,17 +76,16 @@ def load_manifest():
         return json.load(f)
 
 @st.cache_data
-def load_example(filename: str):
+def load_example(data_dir: str, filename: str):
     import gzip
-    gz_path = DATA_DIR / (filename + ".gz")
-    raw_path = DATA_DIR / filename
+    data_dir = Path(data_dir)
+    gz_path = data_dir / (filename + ".gz")
+    raw_path = data_dir / filename
     if gz_path.exists():
         with gzip.open(gz_path, "rt") as f:
             return json.load(f)
     with open(raw_path) as f:
         return json.load(f)
-
-manifest = load_manifest()
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -101,6 +116,17 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 
 st.sidebar.title("Probe Token Viewer")
+
+# Dataset selector.
+available_datasets = discover_datasets()
+if not available_datasets:
+    st.error("No viz_* datasets found in run directory.")
+    st.stop()
+dataset_names = list(available_datasets.keys())
+selected_dataset = st.sidebar.selectbox("Dataset", dataset_names, index=0)
+DATA_DIR = available_datasets[selected_dataset]
+
+manifest = load_manifest(str(DATA_DIR))
 st.sidebar.caption(f"{manifest['model_id']}")
 st.sidebar.caption(f"{manifest['n_examples']} examples from {Path(manifest['dataset']).name}")
 
@@ -147,7 +173,7 @@ st.sidebar.markdown(
 # Load selected example
 # ---------------------------------------------------------------------------
 
-example = load_example(filtered[selected_idx]["file"])
+example = load_example(str(DATA_DIR), filtered[selected_idx]["file"])
 token_strs = example["token_strs"]
 num_tokens = example["num_tokens"]
 label = example["label"]
