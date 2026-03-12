@@ -446,6 +446,22 @@ st.markdown("""
         width: 100% !important;
         max-width: 100% !important;
     }
+    /* Force the Streamlit component iframe wrapper to not constrain height */
+    .stCustomComponentV1,
+    [data-testid="stCustomComponentV1"],
+    .element-container iframe,
+    .stElementContainer iframe {
+        height: auto !important;
+        min-height: 0 !important;
+    }
+    /* The iframe parent div that Streamlit sets a fixed height on */
+    .element-container > div,
+    .stElementContainer > div,
+    [data-testid="stCustomComponentV1"] > div {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -959,14 +975,16 @@ window.addEventListener('resize', drawChart);
 </html>
 """
 
-# Height scales with token count: ~2.4 line-height * 13px font * wrapped lines + detail panel.
-chars_per_line = 120  # rough estimate of characters per line
+# Generous height so the iframe never clips the content.
+# The component's own body has no extra whitespace, and overflow:visible
+# on Streamlit wrappers means no nested scrollbar.
+chars_per_line = 140
 total_chars = sum(len(t) for t in token_strs)
-est_lines = max(10, total_chars // chars_per_line)
-token_area_height = int(est_lines * 32)  # ~32px per line with line-height 2.4
-detail_height = 300
-estimated_height = token_area_height + detail_height
-clicked = components.html(component_html, height=estimated_height, scrolling=True)
+est_lines = max(5, total_chars // chars_per_line)
+token_area_height = int(est_lines * 34)
+detail_height = 320
+component_height = token_area_height + detail_height + 40
+clicked = components.html(component_html, height=component_height, scrolling=False)
 
 # Update session state if a token was clicked.
 if clicked is not None and isinstance(clicked, (int, float)):
