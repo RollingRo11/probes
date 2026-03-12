@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------------------
 # Args (parsed from sys.argv after Streamlit's "--" separator)
@@ -24,7 +25,6 @@ import streamlit as st
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True, help="Directory with manifest.json + example_*.json")
-    # Streamlit passes its own args before "--", so filter.
     args, _ = parser.parse_known_args()
     return args
 
@@ -32,17 +32,29 @@ args = parse_args()
 DATA_DIR = Path(args.data_dir)
 
 # ---------------------------------------------------------------------------
-# Load manifest
+# Load data
 # ---------------------------------------------------------------------------
 
 @st.cache_data
 def load_manifest():
-    with open(DATA_DIR / "manifest.json") as f:
+    import gzip
+    gz_path = DATA_DIR / "manifest.json.gz"
+    raw_path = DATA_DIR / "manifest.json"
+    if gz_path.exists():
+        with gzip.open(gz_path, "rt") as f:
+            return json.load(f)
+    with open(raw_path) as f:
         return json.load(f)
 
 @st.cache_data
 def load_example(filename: str):
-    with open(DATA_DIR / filename) as f:
+    import gzip
+    gz_path = DATA_DIR / (filename + ".gz")
+    raw_path = DATA_DIR / filename
+    if gz_path.exists():
+        with gzip.open(gz_path, "rt") as f:
+            return json.load(f)
+    with open(raw_path) as f:
         return json.load(f)
 
 manifest = load_manifest()
@@ -56,30 +68,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# Custom CSS for dark gray theme and token styling.
-st.markdown("""
-<style>
-    .stApp { background-color: #1e1e1e; }
-    .token-container {
-        line-height: 2.4;
-        padding: 16px;
-        background: #2a2a2a;
-        border-radius: 8px;
-        font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-        font-size: 13px;
-    }
-    .tok {
-        display: inline;
-        padding: 2px 1px;
-        border-radius: 3px;
-        cursor: pointer;
-        white-space: pre-wrap;
-    }
-    .tok:hover { outline: 2px solid #fff; outline-offset: 1px; }
-    .tok.selected { outline: 2px solid #e94560; outline-offset: 1px; }
-</style>
-""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Sidebar controls
@@ -114,10 +102,18 @@ probe_type = st.sidebar.selectbox("Probe type", manifest["probe_types"], index=0
 # Layer slider.
 layers = manifest["layers"]
 default_layer = 20 if 20 in layers else layers[len(layers) // 2]
-layer = st.sidebar.select_slider(
-    "Layer",
-    options=layers,
-    value=default_layer,
+layer = st.sidebar.select_slider("Layer", options=layers, value=default_layer)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    **Color scale**
+    - <span style="color:rgba(26,82,118,1);">&#9632;</span> 0.0 (not aware)
+    - <span style="color:rgba(46,204,113,1);">&#9632;</span> 0.35
+    - <span style="color:rgba(243,156,18,1);">&#9632;</span> 0.60
+    - <span style="color:rgba(231,76,60,1);">&#9632;</span> 1.0 (aware)
+    """,
+    unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -136,7 +132,6 @@ layer_scores = scores_for_probe.get(str(layer), [0.0] * num_tokens)
 # ---------------------------------------------------------------------------
 
 def score_color(s: float) -> str:
-    """Map score [0,1] to rgba color. Blue → green → yellow → red."""
     stops = [
         (0.0,  26,  82, 118),
         (0.35, 46, 204, 113),
@@ -168,93 +163,343 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Render tokens
+# Session state for selected token
+# ---------------------------------------------------------------------------
+
+if "selected_token" not in st.session_state:
+    st.session_state.selected_token = 0
+
+# ---------------------------------------------------------------------------
+# Render tokens as clickable HTML component
 # ---------------------------------------------------------------------------
 
 import html as html_mod
 
-token_html_parts = []
+# Build token data for the JS component.
+token_data = []
 for j, (tok, score) in enumerate(zip(token_strs, layer_scores)):
-    bg = score_color(score)
-    escaped = html_mod.escape(tok)
-    # Use non-breaking markers for newlines so they render.
-    escaped = escaped.replace("\n", "<br>")
-    token_html_parts.append(
-        f'<span class="tok" data-idx="{j}" title="pos {j} | score {score:.3f}" '
-        f'style="background:{bg};">{escaped}</span>'
-    )
+    token_data.append({
+        "idx": j,
+        "text": html_mod.escape(tok).replace("\n", "<br>"),
+        "score": round(score, 3),
+        "color": score_color(score),
+    })
 
-st.markdown(
-    f'<div class="token-container">{"".join(token_html_parts)}</div>',
-    unsafe_allow_html=True,
-)
+token_data_json = json.dumps(token_data)
+selected = st.session_state.selected_token
 
-# ---------------------------------------------------------------------------
-# Token detail: pick a token position to inspect
-# ---------------------------------------------------------------------------
-
-st.markdown("---")
-
-col1, col2 = st.columns([1, 3])
-
-with col1:
-    selected_token = st.number_input(
-        "Token position",
-        min_value=0,
-        max_value=num_tokens - 1,
-        value=0,
-        help="Enter a token position or click a score in the chart",
-    )
-    tok_display = repr(token_strs[selected_token])
-    st.code(tok_display, language=None)
-    st.caption(f"Score at L{layer}: **{layer_scores[selected_token]:.4f}**")
-
-with col2:
-    # Line chart: score across layers for the selected token.
-    import pandas as pd
-
-    all_layers = example["layers"]
-    chart_data = {}
-
-    # Show selected probe + optionally all probes.
-    show_all = st.checkbox("Show all probe types", value=False)
-
-    if show_all:
-        for pt in example["probe_types"]:
-            pt_scores = example["scores"].get(pt, {})
-            chart_data[pt] = [
-                pt_scores.get(str(l), [0.0] * num_tokens)[selected_token]
-                for l in all_layers
-            ]
-    else:
-        chart_data[probe_type] = [
-            scores_for_probe.get(str(l), [0.0] * num_tokens)[selected_token]
-            for l in all_layers
-        ]
-
-    df = pd.DataFrame(chart_data, index=[f"L{l}" for l in all_layers])
-    st.line_chart(df, height=250, use_container_width=True)
-
-    # Find peak.
-    peak_scores = [
-        scores_for_probe.get(str(l), [0.0] * num_tokens)[selected_token]
+# All scores for the selected token across layers and probe types (for the chart).
+all_layers = example["layers"]
+chart_series = {}
+for pt in example["probe_types"]:
+    pt_scores = example["scores"].get(pt, {})
+    chart_series[pt] = [
+        pt_scores.get(str(l), [0.0] * num_tokens)[selected]
         for l in all_layers
     ]
-    peak_layer = all_layers[peak_scores.index(max(peak_scores))]
-    st.caption(f"Peak for **{probe_type}**: Layer {peak_layer} (score {max(peak_scores):.4f})")
+chart_series_json = json.dumps(chart_series)
+layers_json = json.dumps(all_layers)
 
-# ---------------------------------------------------------------------------
-# Legend
-# ---------------------------------------------------------------------------
+# Single HTML component with tokens + embedded line chart.
+component_html = f"""
+<html>
+<head>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ background: #1e1e1e; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; padding: 0; }}
 
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    """
-    **Color scale**
-    - <span style="color:rgba(26,82,118,1);">&#9632;</span> 0.0 (not aware)
-    - <span style="color:rgba(46,204,113,1);">&#9632;</span> 0.35
-    - <span style="color:rgba(243,156,18,1);">&#9632;</span> 0.60
-    - <span style="color:rgba(231,76,60,1);">&#9632;</span> 1.0 (aware)
-    """,
-    unsafe_allow_html=True,
-)
+.token-container {{
+    line-height: 2.4;
+    padding: 16px;
+    background: #2a2a2a;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 16px;
+}}
+
+.tok {{
+    display: inline;
+    padding: 2px 1px;
+    border-radius: 3px;
+    cursor: pointer;
+    white-space: pre-wrap;
+    transition: outline 0.1s;
+}}
+.tok:hover {{ outline: 2px solid #fff; outline-offset: 1px; }}
+.tok.selected {{ outline: 2px solid #e94560; outline-offset: 1px; }}
+
+.detail-panel {{
+    background: #2a2a2a;
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+}}
+
+.detail-left {{
+    min-width: 160px;
+}}
+.detail-left h3 {{
+    font-size: 14px;
+    color: #e94560;
+    margin-bottom: 8px;
+}}
+.detail-token {{
+    font-size: 16px;
+    background: #363636;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    display: inline-block;
+}}
+.detail-score {{
+    font-size: 12px;
+    color: #aaa;
+}}
+
+.chart-container {{
+    flex: 1;
+    min-width: 0;
+}}
+.chart-header {{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}}
+.chart-header h3 {{
+    font-size: 14px;
+    color: #e94560;
+}}
+.chart-header label {{
+    font-size: 11px;
+    color: #888;
+    cursor: pointer;
+}}
+.chart-header input {{
+    margin-right: 4px;
+    accent-color: #e94560;
+}}
+canvas {{
+    width: 100%;
+    border-radius: 4px;
+    background: #222;
+}}
+.peak-info {{
+    font-size: 11px;
+    color: #888;
+    margin-top: 4px;
+}}
+.legend {{
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    font-size: 11px;
+}}
+.legend-item {{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #aaa;
+}}
+.legend-swatch {{
+    width: 12px;
+    height: 3px;
+    border-radius: 1px;
+}}
+</style>
+</head>
+<body>
+
+<div class="token-container" id="token-container"></div>
+
+<div class="detail-panel">
+    <div class="detail-left">
+        <h3 id="detail-title">Token 0</h3>
+        <div class="detail-token" id="detail-token"></div>
+        <div class="detail-score" id="detail-score"></div>
+    </div>
+    <div class="chart-container">
+        <div class="chart-header">
+            <h3>Score across layers</h3>
+            <label><input type="checkbox" id="show-all" onchange="drawChart()"> Show all probes</label>
+        </div>
+        <canvas id="chart" height="180"></canvas>
+        <div class="peak-info" id="peak-info"></div>
+        <div class="legend" id="legend"></div>
+    </div>
+</div>
+
+<script>
+const tokenData = {token_data_json};
+const chartSeries = {chart_series_json};
+const layers = {layers_json};
+const currentProbe = {json.dumps(probe_type)};
+const nTokens = tokenData.length;
+let selectedIdx = {selected};
+
+const probeColors = {{
+    'linear': '#e94560',
+    'ema': '#f39c12',
+    'mlp': '#2ecc71',
+    'attention': '#3498db',
+    'multimax': '#9b59b6',
+    'max_rolling_mean': '#e67e22',
+}};
+
+// Build tokens.
+const container = document.getElementById('token-container');
+const tokenEls = [];
+tokenData.forEach((t, j) => {{
+    const span = document.createElement('span');
+    span.className = 'tok' + (j === selectedIdx ? ' selected' : '');
+    span.innerHTML = t.text;
+    span.style.background = t.color;
+    span.title = `pos ${{j}} | score ${{t.score.toFixed(3)}}`;
+    span.addEventListener('click', () => selectToken(j));
+    container.appendChild(span);
+    tokenEls.push(span);
+}});
+
+function selectToken(j) {{
+    if (selectedIdx >= 0 && selectedIdx < tokenEls.length) {{
+        tokenEls[selectedIdx].classList.remove('selected');
+    }}
+    selectedIdx = j;
+    tokenEls[j].classList.add('selected');
+    tokenEls[j].scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+    updateDetail();
+    drawChart();
+
+    // Communicate back to Streamlit.
+    window.parent.postMessage({{
+        type: 'streamlit:setComponentValue',
+        value: j,
+    }}, '*');
+}}
+
+function updateDetail() {{
+    const t = tokenData[selectedIdx];
+    document.getElementById('detail-title').textContent = 'Token ' + selectedIdx;
+    document.getElementById('detail-token').innerHTML = t.text;
+    document.getElementById('detail-score').textContent = 'Score at current layer: ' + t.score.toFixed(4);
+}}
+
+function drawChart() {{
+    const canvas = document.getElementById('chart');
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width;
+    const H = rect.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    const showAll = document.getElementById('show-all').checked;
+    const probes = showAll ? Object.keys(chartSeries) : [currentProbe];
+
+    const pad = {{ left: 40, right: 16, top: 12, bottom: 24 }};
+    const plotW = W - pad.left - pad.right;
+    const plotH = H - pad.top - pad.bottom;
+
+    // Y axis: 0 to 1.
+    // X axis: layers.
+    const xScale = (i) => pad.left + (i / (layers.length - 1)) * plotW;
+    const yScale = (v) => pad.top + (1 - v) * plotH;
+
+    // Grid lines.
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    for (let v = 0; v <= 1; v += 0.25) {{
+        ctx.beginPath();
+        ctx.moveTo(pad.left, yScale(v));
+        ctx.lineTo(W - pad.right, yScale(v));
+        ctx.stroke();
+    }}
+
+    // Y labels.
+    ctx.fillStyle = '#666';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    for (let v = 0; v <= 1; v += 0.25) {{
+        ctx.fillText(v.toFixed(2), pad.left - 4, yScale(v) + 3);
+    }}
+
+    // X labels.
+    ctx.textAlign = 'center';
+    const xStep = Math.max(1, Math.floor(layers.length / 8));
+    for (let i = 0; i < layers.length; i += xStep) {{
+        ctx.fillText('L' + layers[i], xScale(i), H - 4);
+    }}
+
+    // Draw lines.
+    let peakVal = -1, peakLayer = 0;
+    probes.forEach(pt => {{
+        const series = chartSeries[pt];
+        if (!series) return;
+        const vals = series;  // already per-token scores across layers
+
+        ctx.strokeStyle = probeColors[pt] || '#888';
+        ctx.lineWidth = pt === currentProbe ? 2.5 : 1.2;
+        ctx.globalAlpha = pt === currentProbe ? 1.0 : 0.5;
+
+        ctx.beginPath();
+        vals.forEach((v, i) => {{
+            const x = xScale(i);
+            const y = yScale(Math.max(0, Math.min(1, v)));
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+
+            if (pt === currentProbe && v > peakVal) {{
+                peakVal = v;
+                peakLayer = layers[i];
+            }}
+        }});
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+    }});
+
+    // Peak dot.
+    if (peakVal >= 0) {{
+        const peakIdx = layers.indexOf(peakLayer);
+        ctx.fillStyle = probeColors[currentProbe] || '#e94560';
+        ctx.beginPath();
+        ctx.arc(xScale(peakIdx), yScale(peakVal), 4, 0, Math.PI * 2);
+        ctx.fill();
+    }}
+
+    document.getElementById('peak-info').textContent =
+        'Peak for ' + currentProbe + ': Layer ' + peakLayer + ' (score ' + peakVal.toFixed(4) + ')';
+
+    // Legend.
+    const legendEl = document.getElementById('legend');
+    legendEl.innerHTML = '';
+    probes.forEach(pt => {{
+        const color = probeColors[pt] || '#888';
+        legendEl.innerHTML += `<div class="legend-item"><div class="legend-swatch" style="background:${{color}}"></div>${{pt}}</div>`;
+    }});
+}}
+
+updateDetail();
+// Draw chart after a frame so canvas has correct dimensions.
+requestAnimationFrame(() => drawChart());
+window.addEventListener('resize', drawChart);
+</script>
+</body>
+</html>
+"""
+
+# Calculate height based on content.
+# Rough estimate: token container ~300px + detail panel ~280px + padding.
+estimated_height = 600
+clicked = components.html(component_html, height=estimated_height, scrolling=True)
+
+# Update session state if a token was clicked.
+if clicked is not None and isinstance(clicked, (int, float)):
+    st.session_state.selected_token = int(clicked)
+    st.rerun()
