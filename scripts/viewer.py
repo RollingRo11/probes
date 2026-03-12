@@ -446,22 +446,6 @@ st.markdown("""
         width: 100% !important;
         max-width: 100% !important;
     }
-    /* Force the Streamlit component iframe wrapper to not constrain height */
-    .stCustomComponentV1,
-    [data-testid="stCustomComponentV1"],
-    .element-container iframe,
-    .stElementContainer iframe {
-        height: auto !important;
-        min-height: 0 !important;
-    }
-    /* The iframe parent div that Streamlit sets a fixed height on */
-    .element-container > div,
-    .stElementContainer > div,
-    [data-testid="stCustomComponentV1"] > div {
-        height: auto !important;
-        max-height: none !important;
-        overflow: visible !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
