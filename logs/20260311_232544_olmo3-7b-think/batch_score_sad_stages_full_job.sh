@@ -10,4 +10,4 @@ cd /home/rkathuria/probes
 uv run python scripts/batch_score.py \
     --dataset 'data/sad_stages_full.jsonl' \
     --run-dir 'logs/20260311_232544_olmo3-7b-think' \
-    --output-dir 'logs/20260311_232544_olmo3-7b-think/viz_sad'
+    --output-dir 'logs/20260311_232544_olmo3-7b-think/viz_sad_stages_full'

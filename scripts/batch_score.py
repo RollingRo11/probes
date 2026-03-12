@@ -1,8 +1,11 @@
 """Batch per-token probe scoring for a dataset.
 
-Processes every example through the model once, scores with ALL trained
-probe types at every token position, and saves one JSON per example to
-an output directory.  Designed for SLURM GPU jobs.
+Processes every example through the model once, scores with per-token
+probes (linear, mlp, mean_diff) at every token position, and saves one
+JSON per example to an output directory.  Designed for SLURM GPU jobs.
+
+Sequence probes (attention, multimax, max_rolling_mean, ema) are skipped
+because per-token attribution is unreliable for multi-token aggregators.
 
 Output structure:
     {output_dir}/
@@ -16,12 +19,12 @@ Each example JSON:
         "label": 1,
         "num_tokens": 512,
         "token_strs": ["Can", " you", ...],
-        "probe_types": ["linear", "ema", "mlp", ...],
+        "probe_types": ["linear", "mlp", "mean_diff"],
         "layers": [0, 1, 2, ...],
         "scores": {
-            "linear":   {"0": [0.12, ...], "1": [0.34, ...], ...},
-            "ema":      {"0": [0.11, ...], ...},
-            ...
+            "linear":    {"0": [0.12, ...], "1": [0.34, ...], ...},
+            "mlp":       {"0": [0.11, ...], ...},
+            "mean_diff": {"0": [0.23, ...], ...},
         }
     }
 
@@ -41,14 +44,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from probes.architectures import build_probe, EMAProbe, MeanDiffProbe, SEQUENCE_PROBES
+from probes.architectures import build_probe
 
 
 def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dict]]:
@@ -96,21 +98,20 @@ def _score_example(
 ) -> dict:
     """Score one example with all probes at all layers.
 
-    Returns {
-        probe_type: {
-            "scores": {layer: [per-token scores]},
-            "cumulative": {layer: [causal cumulative scores]},  # sequence probes only
-            "contributions": {layer: [per-token contribution]}, # sequence probes only
-        }
-    }
+    Returns {probe_type: {layer: [per-token scores]}}
+
+    Only scores probes where per-token analysis is meaningful (linear, mlp,
+    mean_diff). Sequence probes (attention, multimax, max_rolling_mean, ema)
+    are skipped — per-token attribution is unreliable for them.
     """
     results: dict = {}
+    PER_TOKEN_PROBES = {"mean_diff", "linear", "mlp"}
 
     for probe_type, layer_probes in probes.items():
-        is_seq = probe_type in SEQUENCE_PROBES
+        if probe_type not in PER_TOKEN_PROBES:
+            continue
+
         layer_scores: dict[str, list[float]] = {}
-        layer_cumulative: dict[str, list[float]] = {}
-        layer_contributions: dict[str, list[float]] = {}
 
         for layer_idx, info in sorted(layer_probes.items()):
             act = activations[layer_idx]  # (1, seq_len, hidden)
@@ -130,212 +131,22 @@ def _score_example(
 
             probe_obj = info["probe"]
             with torch.no_grad():
-                # Per-token independent scores.
                 if hasattr(probe_obj, "transform") and hasattr(probe_obj, "head"):
                     # MLPProbe: transform + linear head works per-token.
                     y = probe_obj.transform(x)
                     logits = probe_obj.head(y).squeeze(-1)
-                    scores = torch.sigmoid(logits).numpy().tolist()
                 elif hasattr(probe_obj, "linear"):
-                    # LinearProbe / EMAProbe: single linear layer works per-token.
+                    # LinearProbe: single linear layer works per-token.
                     logits = probe_obj.linear(x).squeeze(-1)
-                    scores = torch.sigmoid(logits).numpy().tolist()
-                elif hasattr(probe_obj, "transform") and hasattr(probe_obj, "values"):
-                    # AttentionProbe / MultiMaxProbe / MaxRollingMeanProbe:
-                    # Compute per-token importance reflecting each probe's actual mechanism.
-                    y = probe_obj.transform(x)  # (seq_len, mlp_hidden)
-                    v_scores = y @ probe_obj.values.T  # (seq_len, heads)
-
-                    if probe_type == "multimax":
-                        # MultiMax: only the argmax token per head matters.
-                        # Per-token importance = sum of v_h·y_j for heads where j is the argmax.
-                        # Use min-max norm (not sigmoid) so unselected tokens stay at 0.
-                        argmaxes = v_scores.argmax(dim=0)  # (heads,)
-                        raw = torch.zeros(seq_len, device=x.device)
-                        for h in range(v_scores.shape[1]):
-                            j = argmaxes[h].item()
-                            raw[j] += v_scores[j, h]
-                        max_val = raw.max()
-                        scores = (raw / max_val).numpy().tolist() if max_val > 0 else [0.0] * seq_len
-                    elif probe_type == "attention" and hasattr(probe_obj, "queries"):
-                        # Attention: per-token importance = Σ_h attn_{h,j} · (v_h · y_j)
-                        q_scores = y @ probe_obj.queries.T  # (seq_len, heads)
-                        attn = torch.softmax(q_scores, dim=0)  # (seq_len, heads)
-                        logits = (attn * v_scores).sum(dim=1)  # (seq_len,)
-                        scores = torch.sigmoid(logits).numpy().tolist()
-                    else:
-                        # MaxRollingMean or fallback: sum across heads.
-                        logits = v_scores.sum(dim=-1)  # (seq_len,)
-                        scores = torch.sigmoid(logits).numpy().tolist()
                 else:
                     logits = probe_obj(x)
-                    scores = torch.sigmoid(logits).numpy().tolist()
+                scores = torch.sigmoid(logits).numpy().tolist()
 
             layer_scores[str(layer_idx)] = [round(s, 3) for s in scores]
 
-            # Sequence probes: compute cumulative + contribution scores.
-            if is_seq:
-                with torch.no_grad():
-                    cumulative, contributions = _score_sequence_probe(
-                        probe_obj, probe_type, act, seq_len,
-                    )
-                layer_cumulative[str(layer_idx)] = cumulative
-                layer_contributions[str(layer_idx)] = contributions
-
-        entry: dict = {"scores": layer_scores}
-        if is_seq and layer_cumulative:
-            entry["cumulative"] = layer_cumulative
-            entry["contributions"] = layer_contributions
-        results[probe_type] = entry
+        results[probe_type] = layer_scores
 
     return results
-
-
-def _score_sequence_probe(
-    probe_obj, probe_type: str, act: torch.Tensor, seq_len: int,
-) -> tuple[list[float], list[float]]:
-    """Compute causal cumulative scores and per-token contributions for a sequence probe.
-
-    Optimized: computes the MLP transform once, then derives cumulative scores
-    analytically from the transformed representations rather than looping.
-
-    Args:
-        probe_obj: The probe module.
-        act: (1, seq_len, hidden) activation tensor.
-        seq_len: Number of tokens.
-
-    Returns:
-        (cumulative, contributions) — each a list of floats length seq_len.
-    """
-    x_full = act  # (1, seq_len, hidden)
-    contributions = [0.0] * seq_len
-    cumulative = [0.0] * seq_len
-
-    with torch.no_grad():
-        if probe_type == "attention":
-            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
-            q_raw = y @ probe_obj.queries.T  # (seq_len, heads)
-            v_raw = y @ probe_obj.values.T   # (seq_len, heads)
-
-            # Cumulative: batched with causal mask when feasible, else subsampled.
-            MAX_BATCH = 512  # Cap to avoid O(n²) memory blowup.
-            if seq_len <= MAX_BATCH:
-                mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
-                q_exp = q_raw.unsqueeze(0).expand(seq_len, -1, -1).clone()
-                v_exp = v_raw.unsqueeze(0).expand(seq_len, -1, -1)
-                q_exp[~mask] = float('-inf')
-                attn = torch.softmax(q_exp, dim=1)
-                attn[attn != attn] = 0
-                logits = (attn * v_exp).sum(dim=1).sum(dim=1)
-                cumulative = [round(float(v), 3) for v in torch.sigmoid(logits).tolist()]
-            else:
-                # Subsampled: compute at ~MAX_BATCH evenly-spaced positions, interpolate.
-                step = max(1, seq_len // MAX_BATCH)
-                sample_idxs = list(range(0, seq_len, step))
-                if sample_idxs[-1] != seq_len - 1:
-                    sample_idxs.append(seq_len - 1)
-                sample_vals = []
-                for j in sample_idxs:
-                    a = torch.softmax(q_raw[:j + 1], dim=0)
-                    logit = (a * v_raw[:j + 1]).sum()
-                    sample_vals.append(float(torch.sigmoid(logit).item()))
-                # Linear interpolation to fill all positions.
-                cumulative = [0.0] * seq_len
-                for k in range(len(sample_idxs)):
-                    cumulative[sample_idxs[k]] = round(sample_vals[k], 3)
-                for k in range(len(sample_idxs) - 1):
-                    i0, i1 = sample_idxs[k], sample_idxs[k + 1]
-                    v0, v1 = sample_vals[k], sample_vals[k + 1]
-                    for i in range(i0 + 1, i1):
-                        t = (i - i0) / (i1 - i0)
-                        cumulative[i] = round(v0 + t * (v1 - v0), 3)
-
-            # Contributions: exact per-token decomposition of the probe output.
-            # f = Σ_h Σ_j attn_{h,j} · v_{h,j}, so contribution_j = Σ_h attn_{h,j} · v_{h,j}.
-            attn_full = torch.softmax(q_raw, dim=0)  # (seq, heads)
-            token_contrib = (attn_full * v_raw).sum(dim=1)  # (seq,) — signed contribution
-            contributions = [round(float(v), 3) for v in torch.sigmoid(token_contrib).tolist()]
-
-        elif probe_type == "multimax":
-            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
-            v_raw = y @ probe_obj.values.T  # (seq_len, heads)
-
-            # Cumulative: vectorized running max.
-            running_max = torch.cummax(v_raw, dim=0).values  # (seq, heads)
-            logits = running_max.sum(dim=1)  # (seq,)
-            cumulative = [round(float(v), 3) for v in torch.sigmoid(logits).tolist()]
-
-            # Contributions: per-token importance based on argmax selection.
-            # For each head, only the argmax token contributes. Score = sum of
-            # v_h·y_j for heads where token j is selected.
-            # Use min-max normalization (not sigmoid) so unselected tokens stay at 0.
-            argmaxes = v_raw.argmax(dim=0)  # (heads,)
-            token_contrib = torch.zeros(seq_len)
-            for h in range(v_raw.shape[1]):
-                j = argmaxes[h].item()
-                token_contrib[j] += v_raw[j, h].item()
-            # Normalize: 0 for unselected, up to 1.0 for strongest.
-            max_val = token_contrib.max()
-            if max_val > 0:
-                token_contrib = token_contrib / max_val
-            contributions = [round(float(v), 3) for v in token_contrib.tolist()]
-
-        elif probe_type == "max_rolling_mean":
-            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
-            q_raw = y @ probe_obj.queries.T  # (seq_len, heads)
-            v_raw = y @ probe_obj.values.T   # (seq_len, heads)
-            n_heads = probe_obj.n_heads
-            w = min(probe_obj.window, seq_len)
-
-            # Contributions only (skip cumulative — too expensive for O(n²) windows).
-            # Compute all window scores.
-            n_windows = seq_len - w + 1
-            window_vals = torch.zeros(n_heads, max(1, n_windows))
-            for t in range(n_windows):
-                q_win = q_raw[t:t + w]
-                v_win = v_raw[t:t + w]
-                attn_win = torch.softmax(q_win, dim=0)
-                window_vals[:, t] = (attn_win * v_win).sum(dim=0)
-
-            # Cumulative: running max of window scores (only valid from position w-1 onward).
-            if n_windows > 0:
-                running_max_wins = torch.cummax(window_vals, dim=1).values  # (heads, n_windows)
-                cum_logits = running_max_wins.sum(dim=0)  # (n_windows,)
-                cum_sig = torch.sigmoid(cum_logits).tolist()
-                # Pad start: for positions < w, use the probe output on prefix.
-                # Approximate: repeat first valid score for early positions.
-                first_val = cum_sig[0] if cum_sig else 0.5
-                cumulative = [round(first_val, 3)] * (w - 1) + [round(v, 3) for v in cum_sig]
-            else:
-                cumulative = [0.5] * seq_len
-
-            # Contributions: per-token signed contribution across all windows.
-            # For each window, attn_j · v_j is token j's signed contribution.
-            # Accumulate across all windows touching each token, then sigmoid.
-            token_importance = torch.zeros(seq_len)
-            for t in range(n_windows):
-                q_win = q_raw[t:t + w]  # (w, heads)
-                v_win = v_raw[t:t + w]  # (w, heads)
-                attn_win = torch.softmax(q_win, dim=0)  # (w, heads)
-                contrib_win = (attn_win * v_win).sum(dim=1)  # (w,) — signed
-                token_importance[t:t + w] += contrib_win
-            contributions = [round(float(v), 3) for v in torch.sigmoid(token_importance).tolist()]
-
-        elif probe_type == "ema":
-            # EMA: cumulative is just the running EMA-max up to position j.
-            probe_scores = probe_obj.linear(x_full[0]).squeeze(-1)  # (seq,)
-            alpha = probe_obj.alpha
-            ema = torch.zeros_like(probe_scores)
-            ema[0] = probe_scores[0]
-            for j in range(1, seq_len):
-                ema[j] = alpha * probe_scores[j] + (1 - alpha) * ema[j - 1]
-            # Cumulative: running max of ema, sigmoid'd.
-            running_max = torch.cummax(ema, dim=0).values
-            cumulative = [round(float(v), 3) for v in torch.sigmoid(running_max).tolist()]
-            # Contributions: the EMA value at each position (not the max).
-            contributions = [round(float(v), 3) for v in torch.sigmoid(ema).tolist()]
-
-    return cumulative, contributions
 
 
 def batch_score(
@@ -447,20 +258,6 @@ def batch_score(
         all_results = _score_example(activations, probes)
         del activations
 
-        # Flatten into viewer-compatible format:
-        #   scores:        {probe_type: {layer: [per-token]}}
-        #   cumulative:    {probe_type: {layer: [causal running]}}    (seq probes only)
-        #   contributions: {probe_type: {layer: [contribution]}}      (seq probes only)
-        flat_scores = {}
-        flat_cumulative = {}
-        flat_contributions = {}
-        for pt, entry in all_results.items():
-            flat_scores[pt] = entry["scores"]
-            if "cumulative" in entry:
-                flat_cumulative[pt] = entry["cumulative"]
-            if "contributions" in entry:
-                flat_contributions[pt] = entry["contributions"]
-
         # Save per-example JSON.
         example_data = {
             "index": idx,
@@ -470,12 +267,8 @@ def batch_score(
             "text_preview": text[:120],
             "probe_types": probe_types,
             "layers": layers,
-            "scores": flat_scores,
+            "scores": all_results,
         }
-        if flat_cumulative:
-            example_data["cumulative"] = flat_cumulative
-        if flat_contributions:
-            example_data["contributions"] = flat_contributions
         example_path = output_dir / f"example_{idx:04d}.json"
         with open(example_path, "w") as f:
             json.dump(example_data, f)

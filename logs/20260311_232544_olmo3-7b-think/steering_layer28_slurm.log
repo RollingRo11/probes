@@ -1,0 +1,5 @@
+usage: steer.py [-h] [--run-dir RUN_DIR] [--layer LAYER]
+                [--probe-type PROBE_TYPE] [--batch] [--prompts PROMPTS]
+                [--alphas ALPHAS] [--max-new-tokens MAX_NEW_TOKENS]
+                [--temperature TEMPERATURE] [--slurm]
+steer.py: error: argument --alphas: expected one argument
