@@ -1,0 +1,10 @@
+{
+  "model_id": "allenai/Olmo-3-7B-Think",
+  "num_layers": 32,
+  "n_examples": 202,
+  "token_strategy": "last",
+  "max_length": 2048,
+  "layer_path": "model.layers",
+  "layer_output_index": null,
+  "hidden_size": 4096
+}

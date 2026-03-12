@@ -550,8 +550,12 @@ has_contributions = "contributions" in example and probe_type in example.get("co
 if has_cumulative:
     cumulative_for_probe = example["cumulative"][probe_type]
     cumulative_scores = cumulative_for_probe.get(str(layer), [0.0] * num_tokens)
-    # Use cumulative as the highlight color for sequence probes.
-    highlight_scores = cumulative_scores
+else:
+    cumulative_scores = None
+# Use contributions for highlighting (cumulative saturates to 1.0 too quickly).
+if has_contributions:
+    contribution_for_probe_hl = example["contributions"][probe_type]
+    highlight_scores = contribution_for_probe_hl.get(str(layer), [0.0] * num_tokens)
 else:
     highlight_scores = layer_scores
 if has_contributions:
@@ -580,7 +584,9 @@ def score_color(s: float) -> str:
     r = int(r0 + f * (r1 - r0))
     g = int(g0 + f * (g1 - g0))
     b = int(b0 + f * (b1 - b0))
-    return f"rgba({r},{g},{b},0.75)"
+    # Scale alpha with score so low values fade out.
+    alpha = round(0.1 + 0.7 * s, 2)  # 0.1 at score=0, 0.8 at score=1
+    return f"rgba({r},{g},{b},{alpha})"
 
 # ---------------------------------------------------------------------------
 # Header
@@ -588,7 +594,7 @@ def score_color(s: float) -> str:
 
 label_text = "AWARE" if label == 1 else "NOT AWARE"
 label_color = "#e74c3c" if label == 1 else "#2ecc71"
-highlight_mode = " · cumulative highlight" if has_cumulative else ""
+highlight_mode = " · contribution highlight" if has_contributions else ""
 st.markdown(
     f"### Example #{example['index']} &nbsp; "
     f"<span style='color:{label_color};font-size:14px;'>[{label_text}]</span> &nbsp; "

@@ -1,0 +1,522 @@
+{
+  "auroc": 0.9030084320183122,
+  "threshold": 0.9908766150474548,
+  "weighted_error": 4.583350851376918,
+  "accuracy": 0.8188405797101449,
+  "fnr": 0.29577464788732394,
+  "fpr": 0.05970149253731343,
+  "tp": 150.0,
+  "fn": 63.0,
+  "fp": 12.0,
+  "tn": 189.0,
+  "hard_neg_fpr": 0.05970149253731343,
+  "overtrigger_fpr": 0.05970149253731343,
+  "val_auroc": 0.882464176650223,
+  "val_weighted_error": 5.525769321118158,
+  "n_seeds": 100,
+  "seed_logs": [
+    {
+      "seed": 42,
+      "val_auroc": 0.8810899694620625,
+      "val_weighted_error": 6.316443504815598
+    },
+    {
+      "seed": 43,
+      "val_auroc": 0.8814423302795397,
+      "val_weighted_error": 7.01677237491191
+    },
+    {
+      "seed": 44,
+      "val_auroc": 0.8759572468874794,
+      "val_weighted_error": 6.634061545689453
+    },
+    {
+      "seed": 45,
+      "val_auroc": 0.8833920601362463,
+      "val_weighted_error": 8.533027953958188
+    },
+    {
+      "seed": 46,
+      "val_auroc": 0.8816185106882781,
+      "val_weighted_error": 7.666596194503172
+    },
+    {
+      "seed": 47,
+      "val_auroc": 0.8808080808080808,
+      "val_weighted_error": 9.424712238665727
+    },
+    {
+      "seed": 48,
+      "val_auroc": 0.8815362931642,
+      "val_weighted_error": 10.049283533004463
+    },
+    {
+      "seed": 49,
+      "val_auroc": 0.8772492365515623,
+      "val_weighted_error": 7.168287526427061
+    },
+    {
+      "seed": 50,
+      "val_auroc": 0.883204134366925,
+      "val_weighted_error": 7.90845665961945
+    },
+    {
+      "seed": 51,
+      "val_auroc": 0.878999295278365,
+      "val_weighted_error": 6.392201080573173
+    },
+    {
+      "seed": 52,
+      "val_auroc": 0.8775428705661263,
+      "val_weighted_error": 7.958961710124501
+    },
+    {
+      "seed": 53,
+      "val_auroc": 0.8846840498003289,
+      "val_weighted_error": 7.666596194503172
+    },
+    {
+      "seed": 54,
+      "val_auroc": 0.8773079633544749,
+      "val_weighted_error": 9.500469814423303
+    },
+    {
+      "seed": 55,
+      "val_auroc": 0.8815715292459478,
+      "val_weighted_error": 8.099812074230679
+    },
+    {
+      "seed": 56,
+      "val_auroc": 0.8796100540286587,
+      "val_weighted_error": 9.233356824054498
+    },
+    {
+      "seed": 57,
+      "val_auroc": 0.8815010570824524,
+      "val_weighted_error": 6.125088090204369
+    },
+    {
+      "seed": 58,
+      "val_auroc": 0.8792929292929292,
+      "val_weighted_error": 8.392177589852007
+    },
+    {
+      "seed": 59,
+      "val_auroc": 0.8805261921540991,
+      "val_weighted_error": 7.691848719755697
+    },
+    {
+      "seed": 60,
+      "val_auroc": 0.8788583509513742,
+      "val_weighted_error": 6.392201080573173
+    },
+    {
+      "seed": 61,
+      "val_auroc": 0.8791637303265211,
+      "val_weighted_error": 9.500469814423303
+    },
+    {
+      "seed": 62,
+      "val_auroc": 0.8800446323702138,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 63,
+      "val_auroc": 0.8812309137890534,
+      "val_weighted_error": 6.583556495184403
+    },
+    {
+      "seed": 64,
+      "val_auroc": 0.8831923890063427,
+      "val_weighted_error": 6.17559314070942
+    },
+    {
+      "seed": 65,
+      "val_auroc": 0.883286351891003,
+      "val_weighted_error": 6.583556495184403
+    },
+    {
+      "seed": 66,
+      "val_auroc": 0.883615221987315,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 67,
+      "val_auroc": 0.8801151045337092,
+      "val_weighted_error": 7.500493305144468
+    },
+    {
+      "seed": 68,
+      "val_auroc": 0.8834272962179939,
+      "val_weighted_error": 8.774888419074465
+    },
+    {
+      "seed": 69,
+      "val_auroc": 0.8802912849424477,
+      "val_weighted_error": 7.258632840028189
+    },
+    {
+      "seed": 70,
+      "val_auroc": 0.883615221987315,
+      "val_weighted_error": 6.316443504815598
+    },
+    {
+      "seed": 71,
+      "val_auroc": 0.8834742776603242,
+      "val_weighted_error": 6.77491190979563
+    },
+    {
+      "seed": 72,
+      "val_auroc": 0.8836269673478976,
+      "val_weighted_error": 6.8400046981442335
+    },
+    {
+      "seed": 73,
+      "val_auroc": 0.8836622034296453,
+      "val_weighted_error": 8.774888419074465
+    },
+    {
+      "seed": 74,
+      "val_auroc": 0.8775193798449611,
+      "val_weighted_error": 8.608785529715762
+    },
+    {
+      "seed": 75,
+      "val_auroc": 0.8846370683579985,
+      "val_weighted_error": 7.182875264270613
+    },
+    {
+      "seed": 76,
+      "val_auroc": 0.8808198261686634,
+      "val_weighted_error": 7.092529950669485
+    },
+    {
+      "seed": 77,
+      "val_auroc": 0.8815832746065305,
+      "val_weighted_error": 8.634038054968288
+    },
+    {
+      "seed": 78,
+      "val_auroc": 0.8807493540051681,
+      "val_weighted_error": 7.8074465586093496
+    },
+    {
+      "seed": 79,
+      "val_auroc": 0.8790697674418606,
+      "val_weighted_error": 8.608785529715762
+    },
+    {
+      "seed": 80,
+      "val_auroc": 0.8810899694620624,
+      "val_weighted_error": 7.691848719755697
+    },
+    {
+      "seed": 81,
+      "val_auroc": 0.8819591261451727,
+      "val_weighted_error": 8.240662438336857
+    },
+    {
+      "seed": 82,
+      "val_auroc": 0.882440685929058,
+      "val_weighted_error": 11.182828282828282
+    },
+    {
+      "seed": 83,
+      "val_auroc": 0.8800328870096312,
+      "val_weighted_error": 6.825416960300681
+    },
+    {
+      "seed": 84,
+      "val_auroc": 0.8809020436927414,
+      "val_weighted_error": 7.8579516091144
+    },
+    {
+      "seed": 85,
+      "val_auroc": 0.8805261921540991,
+      "val_weighted_error": 7.500493305144468
+    },
+    {
+      "seed": 86,
+      "val_auroc": 0.8793634014564247,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 87,
+      "val_auroc": 0.881759455015269,
+      "val_weighted_error": 9.309114399812074
+    },
+    {
+      "seed": 88,
+      "val_auroc": 0.8758867747239841,
+      "val_weighted_error": 6.417453605825699
+    },
+    {
+      "seed": 89,
+      "val_auroc": 0.8802560488607,
+      "val_weighted_error": 8.44268264035706
+    },
+    {
+      "seed": 90,
+      "val_auroc": 0.8829927178764387,
+      "val_weighted_error": 7.666596194503172
+    },
+    {
+      "seed": 91,
+      "val_auroc": 0.8754404510218463,
+      "val_weighted_error": 8.583533004463238
+    },
+    {
+      "seed": 92,
+      "val_auroc": 0.8806553911205074,
+      "val_weighted_error": 8.366925064599483
+    },
+    {
+      "seed": 93,
+      "val_auroc": 0.882440685929058,
+      "val_weighted_error": 7.283885365280714
+    },
+    {
+      "seed": 94,
+      "val_auroc": 0.8848367394879022,
+      "val_weighted_error": 6.5583039699318775
+    },
+    {
+      "seed": 95,
+      "val_auroc": 0.883039699318769,
+      "val_weighted_error": 7.5257458303969935
+    },
+    {
+      "seed": 96,
+      "val_auroc": 0.8819003993422598,
+      "val_weighted_error": 8.558280479210712
+    },
+    {
+      "seed": 97,
+      "val_auroc": 0.8814540756401221,
+      "val_weighted_error": 7.5257458303969935
+    },
+    {
+      "seed": 98,
+      "val_auroc": 0.883368569415081,
+      "val_weighted_error": 7.424735729386892
+    },
+    {
+      "seed": 99,
+      "val_auroc": 0.8818886539816773,
+      "val_weighted_error": 6.749659384543105
+    },
+    {
+      "seed": 100,
+      "val_auroc": 0.884214235377026,
+      "val_weighted_error": 8.291167488841907
+    },
+    {
+      "seed": 101,
+      "val_auroc": 0.8810077519379845,
+      "val_weighted_error": 7.01677237491191
+    },
+    {
+      "seed": 102,
+      "val_auroc": 0.8793634014564247,
+      "val_weighted_error": 9.067253934695795
+    },
+    {
+      "seed": 103,
+      "val_auroc": 0.8805496828752643,
+      "val_weighted_error": 5.9337326755931405
+    },
+    {
+      "seed": 104,
+      "val_auroc": 0.8803030303030303,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 105,
+      "val_auroc": 0.881242659149636,
+      "val_weighted_error": 8.583533004463238
+    },
+    {
+      "seed": 106,
+      "val_auroc": 0.8851656095842142,
+      "val_weighted_error": 7.998801973220578
+    },
+    {
+      "seed": 107,
+      "val_auroc": 0.8770143293399107,
+      "val_weighted_error": 7.233380314775664
+    },
+    {
+      "seed": 108,
+      "val_auroc": 0.8837914023960536,
+      "val_weighted_error": 6.941014799154334
+    },
+    {
+      "seed": 109,
+      "val_auroc": 0.8841672539346958,
+      "val_weighted_error": 7.8579516091144
+    },
+    {
+      "seed": 110,
+      "val_auroc": 0.88107822410148,
+      "val_weighted_error": 7.01677237491191
+    },
+    {
+      "seed": 111,
+      "val_auroc": 0.8806553911205074,
+      "val_weighted_error": 8.80014094432699
+    },
+    {
+      "seed": 112,
+      "val_auroc": 0.8800681230913789,
+      "val_weighted_error": 7.500493305144468
+    },
+    {
+      "seed": 113,
+      "val_auroc": 0.882464176650223,
+      "val_weighted_error": 5.525769321118158
+    },
+    {
+      "seed": 114,
+      "val_auroc": 0.8796805261921541,
+      "val_weighted_error": 6.800164435048155
+    },
+    {
+      "seed": 115,
+      "val_auroc": 0.879574817946911,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 116,
+      "val_auroc": 0.8817712003758517,
+      "val_weighted_error": 10.150293634014563
+    },
+    {
+      "seed": 117,
+      "val_auroc": 0.8791050035236083,
+      "val_weighted_error": 6.72440685929058
+    },
+    {
+      "seed": 118,
+      "val_auroc": 0.8832511158092553,
+      "val_weighted_error": 6.291190979563073
+    },
+    {
+      "seed": 119,
+      "val_auroc": 0.8804674653511864,
+      "val_weighted_error": 6.634061545689453
+    },
+    {
+      "seed": 120,
+      "val_auroc": 0.8805261921540991,
+      "val_weighted_error": 7.042024900164435
+    },
+    {
+      "seed": 121,
+      "val_auroc": 0.8786234437397228,
+      "val_weighted_error": 6.17559314070942
+    },
+    {
+      "seed": 122,
+      "val_auroc": 0.8772492365515622,
+      "val_weighted_error": 7.309137890533239
+    },
+    {
+      "seed": 123,
+      "val_auroc": 0.8772727272727272,
+      "val_weighted_error": 7.042024900164435
+    },
+    {
+      "seed": 124,
+      "val_auroc": 0.8805261921540992,
+      "val_weighted_error": 6.608809020436928
+    },
+    {
+      "seed": 125,
+      "val_auroc": 0.8798097251585624,
+      "val_weighted_error": 7.258632840028189
+    },
+    {
+      "seed": 126,
+      "val_auroc": 0.8800446323702138,
+      "val_weighted_error": 6.583556495184403
+    },
+    {
+      "seed": 127,
+      "val_auroc": 0.8843669250645995,
+      "val_weighted_error": 7.233380314775664
+    },
+    {
+      "seed": 128,
+      "val_auroc": 0.8816067653276956,
+      "val_weighted_error": 6.341696030068123
+    },
+    {
+      "seed": 129,
+      "val_auroc": 0.8827460653042049,
+      "val_weighted_error": 9.449964763918253
+    },
+    {
+      "seed": 130,
+      "val_auroc": 0.8834625322997415,
+      "val_weighted_error": 11.857904627672069
+    },
+    {
+      "seed": 131,
+      "val_auroc": 0.8824524312896407,
+      "val_weighted_error": 5.9084801503406155
+    },
+    {
+      "seed": 132,
+      "val_auroc": 0.8808785529715762,
+      "val_weighted_error": 7.182875264270613
+    },
+    {
+      "seed": 133,
+      "val_auroc": 0.8783180643645759,
+      "val_weighted_error": 7.4752407798919425
+    },
+    {
+      "seed": 134,
+      "val_auroc": 0.8806906272022551,
+      "val_weighted_error": 7.449988254639417
+    },
+    {
+      "seed": 135,
+      "val_auroc": 0.8822997416020673,
+      "val_weighted_error": 7.233380314775664
+    },
+    {
+      "seed": 136,
+      "val_auroc": 0.8816420014094432,
+      "val_weighted_error": 7.042024900164435
+    },
+    {
+      "seed": 137,
+      "val_auroc": 0.8822645055203195,
+      "val_weighted_error": 6.099835564951844
+    },
+    {
+      "seed": 138,
+      "val_auroc": 0.8797627437162321,
+      "val_weighted_error": 6.800164435048155
+    },
+    {
+      "seed": 139,
+      "val_auroc": 0.8825933756166315,
+      "val_weighted_error": 5.958985200845666
+    },
+    {
+      "seed": 140,
+      "val_auroc": 0.8788818416725394,
+      "val_weighted_error": 8.366925064599483
+    },
+    {
+      "seed": 141,
+      "val_auroc": 0.8803030303030304,
+      "val_weighted_error": 6.583556495184403
+    }
+  ],
+  "layer": 24,
+  "probe_type": "max_rolling_mean",
+  "elapsed_s": 109.78
+}

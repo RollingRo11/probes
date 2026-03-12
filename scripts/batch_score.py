@@ -130,12 +130,21 @@ def _score_example(
 
             probe_obj = info["probe"]
             with torch.no_grad():
-                # Per-token independent scores (works for all probes).
+                # Per-token independent scores.
                 if hasattr(probe_obj, "transform") and hasattr(probe_obj, "head"):
+                    # MLPProbe: transform + linear head works per-token.
                     y = probe_obj.transform(x)
                     logits = probe_obj.head(y).squeeze(-1)
                 elif hasattr(probe_obj, "linear"):
+                    # LinearProbe / EMAProbe: single linear layer works per-token.
                     logits = probe_obj.linear(x).squeeze(-1)
+                elif hasattr(probe_obj, "transform") and hasattr(probe_obj, "values"):
+                    # AttentionProbe / MultiMaxProbe / MaxRollingMeanProbe:
+                    # forward() treats each token as a 1-position batch → meaningless.
+                    # Instead, use sum_h(v_h · transform(x_j)) as per-token signal.
+                    y = probe_obj.transform(x)  # (seq_len, mlp_hidden)
+                    v_scores = y @ probe_obj.values.T  # (seq_len, heads)
+                    logits = v_scores.sum(dim=-1)  # (seq_len,)
                 else:
                     logits = probe_obj(x)
                 scores = torch.sigmoid(logits).numpy().tolist()
@@ -219,10 +228,15 @@ def _score_sequence_probe(
                         t = (i - i0) / (i1 - i0)
                         cumulative[i] = round(v0 + t * (v1 - v0), 3)
 
-            # Contributions: attention weights on full sequence.
+            # Contributions: attention-weighted value magnitude per token.
+            # softmax(q).mean(heads) is ~1/N for all tokens — useless.
+            # Instead: for each head, weight = attn_h,j * |v_h,j|, then max across heads.
             attn_full = torch.softmax(q_raw, dim=0)  # (seq, heads)
-            mean_attn = attn_full.mean(dim=1)  # (seq,)
-            contributions = [round(float(v), 3) for v in mean_attn.tolist()]
+            weighted_v = attn_full * v_raw.abs()  # (seq, heads)
+            token_signal = weighted_v.max(dim=1).values  # (seq,) — max across heads
+            if token_signal.max() > 0:
+                token_signal = token_signal / token_signal.max()
+            contributions = [round(float(v), 3) for v in token_signal.tolist()]
 
         elif probe_type == "multimax":
             y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
@@ -266,14 +280,16 @@ def _score_sequence_probe(
             else:
                 cumulative = [0.5] * seq_len
 
-            # Contributions: attention weight in peak windows.
+            # Contributions: per-token value signal across all windows.
+            # Old approach only used peak windows → most tokens got 0.
+            # New: accumulate |attn * v| for each token across all windows and heads.
             token_importance = torch.zeros(seq_len)
-            peak_windows = window_vals.max(dim=-1).indices  # (heads,)
-            for h in range(n_heads):
-                t = int(peak_windows[h].item())
-                q_win = q_raw[t:t + w, h]
-                attn_win = torch.softmax(q_win, dim=0)
-                token_importance[t:t + w] += attn_win
+            for t in range(n_windows):
+                q_win = q_raw[t:t + w]  # (w, heads)
+                v_win = v_raw[t:t + w]  # (w, heads)
+                attn_win = torch.softmax(q_win, dim=0)  # (w, heads)
+                contrib_win = (attn_win * v_win.abs()).sum(dim=1)  # (w,)
+                token_importance[t:t + w] += contrib_win
             if token_importance.max() > 0:
                 token_importance = token_importance / token_importance.max()
             contributions = [round(float(v), 3) for v in token_importance.tolist()]

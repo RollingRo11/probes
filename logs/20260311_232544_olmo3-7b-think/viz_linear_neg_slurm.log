@@ -1,0 +1,8 @@
+`torch_dtype` is deprecated! Use `dtype` instead!
+[viz] Using example 0: label=0, 9334 chars
+[viz] Loading model allenai/Olmo-3-7B-Think ...
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]Loading checkpoint shards:  33%|███▎      | 1/3 [00:00<00:01,  1.18it/s]Loading checkpoint shards:  67%|██████▋   | 2/3 [00:01<00:00,  1.25it/s]Loading checkpoint shards: 100%|██████████| 3/3 [00:02<00:00,  1.35it/s]Loading checkpoint shards: 100%|██████████| 3/3 [00:02<00:00,  1.31it/s]
+[viz] Running forward pass (1821 tokens) ...
+[viz] Heatmap shape: (32, 1821) (32 layers × 1821 tokens)
+[viz] Saved heatmap → logs/20260311_232544_olmo3-7b-think/viz_linear_tokens_neg.html
+[viz] Saved scores → logs/20260311_232544_olmo3-7b-think/viz_linear_tokens_neg.json
