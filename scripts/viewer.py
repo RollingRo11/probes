@@ -201,17 +201,11 @@ for j, (tok, score) in enumerate(zip(token_strs, layer_scores)):
 token_data_json = json.dumps(token_data)
 selected = st.session_state.selected_token
 
-# All scores for the selected token across layers and probe types (for the chart).
+# Pass full scores to JS so it can recompute chart for any clicked token.
 all_layers = example["layers"]
-chart_series = {}
-for pt in example["probe_types"]:
-    pt_scores = example["scores"].get(pt, {})
-    chart_series[pt] = [
-        pt_scores.get(str(l), [0.0] * num_tokens)[selected]
-        for l in all_layers
-    ]
-chart_series_json = json.dumps(chart_series)
+full_scores_json = json.dumps(example["scores"])
 layers_json = json.dumps(all_layers)
+probe_types_json = json.dumps(example["probe_types"])
 
 # Single HTML component with tokens + embedded line chart.
 component_html = f"""
@@ -347,11 +341,25 @@ canvas {{
 
 <script>
 const tokenData = {token_data_json};
-const chartSeries = {chart_series_json};
+const fullScores = {full_scores_json};
 const layers = {layers_json};
+const probeTypes = {probe_types_json};
 const currentProbe = {json.dumps(probe_type)};
 const nTokens = tokenData.length;
 let selectedIdx = {selected};
+
+// Extract chart series for a given token index.
+function getChartSeries(tokIdx) {{
+    const series = {{}};
+    probeTypes.forEach(pt => {{
+        const ptScores = fullScores[pt] || {{}};
+        series[pt] = layers.map(l => {{
+            const layerArr = ptScores[String(l)] || [];
+            return layerArr[tokIdx] || 0;
+        }});
+    }});
+    return series;
+}}
 
 const probeColors = {{
     'linear': '#e94560',
@@ -414,7 +422,8 @@ function drawChart() {{
     ctx.clearRect(0, 0, W, H);
 
     const showAll = document.getElementById('show-all').checked;
-    const probes = showAll ? Object.keys(chartSeries) : [currentProbe];
+    const chartSeries = getChartSeries(selectedIdx);
+    const probes = showAll ? probeTypes : [currentProbe];
 
     const pad = {{ left: 40, right: 16, top: 12, bottom: 24 }};
     const plotW = W - pad.left - pad.right;
