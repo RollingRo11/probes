@@ -103,11 +103,28 @@ st.markdown("""
     .stApp { background-color: #1e1e1e; }
     .block-container {
         max-width: 100% !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
         padding-top: 1rem !important;
     }
-    iframe { width: 100% !important; }
+    /* Kill all Streamlit inner containers that constrain width */
+    .stMainBlockContainer, .stVerticalBlock, .stHorizontalBlock,
+    [data-testid="stAppViewBlockContainer"],
+    [data-testid="stVerticalBlockBorderWrapper"],
+    .element-container, .stElementContainer {
+        max-width: 100% !important;
+        width: 100% !important;
+    }
+    iframe {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    /* Remove default Streamlit top padding */
+    .appview-container .main .block-container {
+        padding-top: 1rem !important;
+        max-width: 100% !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
