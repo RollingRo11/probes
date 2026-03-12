@@ -53,8 +53,23 @@ def eval_probes(dataset_path: str, run_dir: str, output_path: str | None = None)
     texts = [r["text"] for r in rows]
     labels = [r["label"] for r in rows]
     answer_token_chars = None
+    evidence_char_spans = None
+
+    # Determine eval extraction strategy: use the training token_strategy
+    # if the eval dataset has the required fields, otherwise fall back to "last".
+    eval_token_strategy = token_strategy
     if token_strategy == "answer_token":
-        answer_token_chars = [r["answer_token_char"] for r in rows]
+        if all("answer_token_char" in r for r in rows):
+            answer_token_chars = [r["answer_token_char"] for r in rows]
+        else:
+            print(f"[eval] Eval dataset lacks answer_token_char; falling back to 'last'.")
+            eval_token_strategy = "last"
+    elif token_strategy == "evidence_spans":
+        if all("evidence_char_spans" in r for r in rows):
+            evidence_char_spans = [r["evidence_char_spans"] for r in rows]
+        else:
+            print(f"[eval] Eval dataset lacks evidence_char_spans; falling back to 'last'.")
+            eval_token_strategy = "last"
 
     # Extract activations.
     eval_act_dir = run_dir / "eval_activations" / Path(dataset_path).stem
@@ -66,11 +81,12 @@ def eval_probes(dataset_path: str, run_dir: str, output_path: str | None = None)
         num_layers=num_layers,
         layer_path=layer_path,
         layer_output_index=layer_output_index,
-        token_strategy=token_strategy,
+        token_strategy=eval_token_strategy,
         batch_size=batch_size,
         max_length=max_length,
         skip_if_exists=False,
         answer_token_chars=answer_token_chars,
+        evidence_char_spans=evidence_char_spans,
     )
 
     # Discover all trained probes.

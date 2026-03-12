@@ -1,19 +1,15 @@
 # Probes trained on Test Awareness Steering dataset (arXiv:2505.14617)
-# from microsoft/Test_Awareness_Steering.
+# using OLMo-3.1-32B-Think.
 #
-# Positive: model's CoT reasoning shows test awareness (awareness=Yes/Maybe
-#           or recognition=Yes/Maybe, as judged by GPT)
-# Negative: model's CoT shows no test awareness (both=No)
-#
-# Text is prompt + full CoT reasoning. Extraction mean-pools over evidence
-# span tokens (the sentences GPT flagged as showing/not-showing awareness).
+# Same dataset and extraction strategy as test_awareness.yaml but for 32B model.
+# Extraction mean-pools over evidence span tokens.
 # 4134 examples (2067 pos, 2067 neg), balanced.
 
 model:
-    id: "allenai/Olmo-3-7B-Think"
-    short_name: "olmo3-7b-think"
-    num_layers: 32
-    hidden_size: 4096
+    id: "allenai/Olmo-3.1-32B-Think"
+    short_name: "olmo31-32b-think"
+    num_layers: 64
+    hidden_size: 5120
     layer_path: "model.layers"
     layer_output_index: null
 
@@ -43,7 +39,7 @@ dataset:
     seed: 42
 
 extraction:
-    batch_size: 4
+    batch_size: 2
     token_strategy: "evidence_spans"
     max_length: 2048
 
@@ -69,12 +65,12 @@ vllm:
 slurm:
     partition: "compute"
     max_concurrent: 16
-    extract_timeout: "6:00:00"
+    extract_timeout: "12:00:00"
     train_timeout: "4:00:00"
-    job_name: "probes-testaware"
+    job_name: "probes-testaware-32b"
     gpus_per_node: 8
     cpus_per_node: 64
-    extract_gpus: 1
+    extract_gpus: 4
     train_gpus: 1
 
 wandb:

@@ -165,12 +165,12 @@ def slurm_log_dir(log_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def load_dataset(config: dict) -> tuple[list[str], list[int], list[int] | None]:
-    """Load (texts, labels, answer_token_chars) from the configured JSONL file.
+def load_dataset(config: dict) -> tuple[list[str], list[int], list[int] | None, list[list[list[int]]] | None]:
+    """Load (texts, labels, answer_token_chars, evidence_char_spans) from JSONL.
 
     answer_token_chars is only populated when entries have an "answer_token_char"
-    field (Simple Contrastive Dataset). Otherwise returns None, meaning the
-    extraction will use the configured token_strategy without per-example offsets.
+    field (Simple Contrastive Dataset). evidence_char_spans is only populated
+    when entries have an "evidence_char_spans" field (Test Awareness Steering).
     """
     import json as _json
     path = Path(config["dataset"]["path"])
@@ -183,8 +183,9 @@ def load_dataset(config: dict) -> tuple[list[str], list[int], list[int] | None]:
             f"Run `uv run python scripts/generate_data.py` to create it."
         )
 
-    texts, labels, atc = [], [], []
+    texts, labels, atc, ecs = [], [], [], []
     has_atc = False
+    has_ecs = False
     with open(path) as f:
         for line in f:
             row = _json.loads(line)
@@ -195,8 +196,13 @@ def load_dataset(config: dict) -> tuple[list[str], list[int], list[int] | None]:
                 has_atc = True
             else:
                 atc.append(-1)
+            if "evidence_char_spans" in row:
+                ecs.append(row["evidence_char_spans"])
+                has_ecs = True
+            else:
+                ecs.append([])
 
-    return texts, labels, (atc if has_atc else None)
+    return texts, labels, (atc if has_atc else None), (ecs if has_ecs else None)
 
 
 def apply_chat_template(config: dict, texts: list[str]) -> list[str]:
@@ -224,7 +230,7 @@ def run_extract(config: dict, log_dir: Path) -> None:
     """Extract activations for all layers and save to disk."""
     from probes.extraction import extract_activations
 
-    texts, labels, answer_token_chars = load_dataset(config)
+    texts, labels, answer_token_chars, evidence_char_spans = load_dataset(config)
     print(f"[extract] {len(texts)} examples loaded.")
 
     ext_cfg = config.get("extraction", {})
@@ -239,12 +245,19 @@ def run_extract(config: dict, log_dir: Path) -> None:
         )
         token_strategy = "answer_token"
 
-    # Chat-template formatting is NOT applied for simple contrastive entries:
-    # the MCQ prompt is already fully specified.  Apply only when no offsets present.
-    if answer_token_chars is None:
+    # Auto-switch to evidence_spans when configured and dataset has spans.
+    if token_strategy == "evidence_spans" and evidence_char_spans is None:
+        print(
+            "[extract] WARNING: token_strategy='evidence_spans' but dataset has no "
+            "evidence_char_spans field. Falling back to 'last'."
+        )
+        token_strategy = "last"
+
+    # Chat-template formatting is NOT applied when char offsets must be preserved.
+    if answer_token_chars is None and token_strategy != "evidence_spans":
         formatted = apply_chat_template(config, texts)
     else:
-        formatted = texts  # keep raw MCQ text so char offsets remain valid
+        formatted = texts  # keep raw text so char offsets remain valid
 
     model_cfg = config["model"]
     out_dir = activations_dir(config, log_dir)
@@ -261,6 +274,7 @@ def run_extract(config: dict, log_dir: Path) -> None:
         batch_size=ext_cfg.get("batch_size", 8),
         max_length=ext_cfg.get("max_length", 2048),
         answer_token_chars=answer_token_chars,
+        evidence_char_spans=evidence_char_spans,
     )
 
 
