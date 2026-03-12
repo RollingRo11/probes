@@ -93,15 +93,29 @@ def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dic
 def _score_example(
     activations: dict[int, torch.Tensor],
     probes: dict[str, dict[int, dict]],
-) -> dict[str, dict[str, list[float]]]:
-    """Score one example with all probes at all layers. Returns {probe_type: {layer: [scores]}}."""
-    results: dict[str, dict[str, list[float]]] = {}
+) -> dict:
+    """Score one example with all probes at all layers.
+
+    Returns {
+        probe_type: {
+            "scores": {layer: [per-token scores]},
+            "cumulative": {layer: [causal cumulative scores]},  # sequence probes only
+            "contributions": {layer: [per-token contribution]}, # sequence probes only
+        }
+    }
+    """
+    results: dict = {}
 
     for probe_type, layer_probes in probes.items():
+        is_seq = probe_type in SEQUENCE_PROBES
         layer_scores: dict[str, list[float]] = {}
+        layer_cumulative: dict[str, list[float]] = {}
+        layer_contributions: dict[str, list[float]] = {}
+
         for layer_idx, info in sorted(layer_probes.items()):
             act = activations[layer_idx]  # (1, seq_len, hidden)
             x = act[0]  # (seq_len, hidden)
+            seq_len = x.shape[0]
 
             if info["type"] == "mean_diff":
                 direction = info["direction"]
@@ -111,23 +125,157 @@ def _score_example(
                     scores = ((raw - lo) / (hi - lo)).tolist()
                 else:
                     scores = [0.5] * len(raw)
-            else:
-                probe_obj = info["probe"]
-                with torch.no_grad():
-                    if hasattr(probe_obj, "transform") and hasattr(probe_obj, "head"):
-                        y = probe_obj.transform(x)
-                        logits = probe_obj.head(y).squeeze(-1)
-                    elif hasattr(probe_obj, "linear"):
-                        logits = probe_obj.linear(x).squeeze(-1)
-                    else:
-                        logits = probe_obj(x)
-                    scores = torch.sigmoid(logits).numpy().tolist()
+                layer_scores[str(layer_idx)] = [round(s, 3) for s in scores]
+                continue
 
-            # Round to 3 decimal places to save space.
+            probe_obj = info["probe"]
+            with torch.no_grad():
+                # Per-token independent scores (works for all probes).
+                if hasattr(probe_obj, "transform") and hasattr(probe_obj, "head"):
+                    y = probe_obj.transform(x)
+                    logits = probe_obj.head(y).squeeze(-1)
+                elif hasattr(probe_obj, "linear"):
+                    logits = probe_obj.linear(x).squeeze(-1)
+                else:
+                    logits = probe_obj(x)
+                scores = torch.sigmoid(logits).numpy().tolist()
+
             layer_scores[str(layer_idx)] = [round(s, 3) for s in scores]
-        results[probe_type] = layer_scores
+
+            # Sequence probes: compute cumulative + contribution scores.
+            if is_seq:
+                with torch.no_grad():
+                    cumulative, contributions = _score_sequence_probe(
+                        probe_obj, probe_type, act, seq_len,
+                    )
+                layer_cumulative[str(layer_idx)] = cumulative
+                layer_contributions[str(layer_idx)] = contributions
+
+        entry: dict = {"scores": layer_scores}
+        if is_seq and layer_cumulative:
+            entry["cumulative"] = layer_cumulative
+            entry["contributions"] = layer_contributions
+        results[probe_type] = entry
 
     return results
+
+
+def _score_sequence_probe(
+    probe_obj, probe_type: str, act: torch.Tensor, seq_len: int,
+) -> tuple[list[float], list[float]]:
+    """Compute causal cumulative scores and per-token contributions for a sequence probe.
+
+    Optimized: computes the MLP transform once, then derives cumulative scores
+    analytically from the transformed representations rather than looping.
+
+    Args:
+        probe_obj: The probe module.
+        act: (1, seq_len, hidden) activation tensor.
+        seq_len: Number of tokens.
+
+    Returns:
+        (cumulative, contributions) — each a list of floats length seq_len.
+    """
+    x_full = act  # (1, seq_len, hidden)
+    contributions = [0.0] * seq_len
+    cumulative = [0.0] * seq_len
+
+    with torch.no_grad():
+        if probe_type == "attention":
+            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
+            q_raw = y @ probe_obj.queries.T  # (seq_len, heads)
+            v_raw = y @ probe_obj.values.T   # (seq_len, heads)
+
+            # Cumulative: for each prefix [0..j], compute full attention output.
+            # Use cumsum trick for efficient computation.
+            for j in range(seq_len):
+                q_prefix = q_raw[:j + 1]  # (j+1, heads)
+                v_prefix = v_raw[:j + 1]  # (j+1, heads)
+                attn = torch.softmax(q_prefix, dim=0)  # (j+1, heads) - softmax over positions
+                # Σ_h Σ_j attn_j * v_j
+                logit = (attn * v_prefix).sum()
+                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
+
+            # Contributions: attention weights on full sequence.
+            attn_full = torch.softmax(q_raw, dim=0)  # (seq, heads)
+            mean_attn = attn_full.mean(dim=1)  # (seq,)
+            contributions = [round(float(v), 3) for v in mean_attn.tolist()]
+
+        elif probe_type == "multimax":
+            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
+            v_raw = y @ probe_obj.values.T  # (seq_len, heads)
+
+            # Cumulative: running max over positions, sum over heads.
+            running_max = v_raw[0].clone()  # (heads,)
+            logit = running_max.sum()
+            cumulative[0] = round(float(torch.sigmoid(logit).item()), 3)
+            for j in range(1, seq_len):
+                running_max = torch.max(running_max, v_raw[j])
+                logit = running_max.sum()
+                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
+
+            # Contributions: max_h(v_h · y_j) per position, sigmoid'd.
+            max_v = v_raw.max(dim=1).values  # (seq,)
+            contributions = [round(float(v), 3) for v in torch.sigmoid(max_v).tolist()]
+
+        elif probe_type == "max_rolling_mean":
+            y = probe_obj.transform(x_full[0])  # (seq_len, mlp_hidden)
+            q_raw = y @ probe_obj.queries.T  # (seq_len, heads)
+            v_raw = y @ probe_obj.values.T   # (seq_len, heads)
+            n_heads = probe_obj.n_heads
+            w = min(probe_obj.window, seq_len)
+
+            # Cumulative: for prefix [0..j], compute max-rolling-mean.
+            for j in range(seq_len):
+                prefix_len = j + 1
+                w_j = min(w, prefix_len)
+                n_win = prefix_len - w_j + 1
+                best_val = torch.tensor(float('-inf'))
+                head_maxes = torch.zeros(n_heads)
+                for t in range(n_win):
+                    q_win = q_raw[t:t + w_j]  # (w_j, heads)
+                    v_win = v_raw[t:t + w_j]  # (w_j, heads)
+                    attn_win = torch.softmax(q_win, dim=0)  # (w_j, heads)
+                    win_val = (attn_win * v_win).sum(dim=0)  # (heads,)
+                    head_maxes = torch.max(head_maxes, win_val)
+                logit = head_maxes.sum()
+                cumulative[j] = round(float(torch.sigmoid(logit).item()), 3)
+
+            # Contributions: attention weight in peak windows.
+            n_windows = seq_len - w + 1
+            window_vals = torch.zeros(n_heads, max(1, n_windows))
+            for t in range(n_windows):
+                q_win = q_raw[t:t + w]
+                v_win = v_raw[t:t + w]
+                attn_win = torch.softmax(q_win, dim=0)
+                window_vals[:, t] = (attn_win * v_win).sum(dim=0)
+
+            token_importance = torch.zeros(seq_len)
+            peak_windows = window_vals.max(dim=-1).indices  # (heads,)
+            for h in range(n_heads):
+                t = int(peak_windows[h].item())
+                q_win = q_raw[t:t + w, h]
+                attn_win = torch.softmax(q_win, dim=0)
+                token_importance[t:t + w] += attn_win
+            if token_importance.max() > 0:
+                token_importance = token_importance / token_importance.max()
+            contributions = [round(float(v), 3) for v in token_importance.tolist()]
+
+        elif probe_type == "ema":
+            # EMA: cumulative is just the running EMA-max up to position j.
+            probe_scores = probe_obj.linear(x_full[0]).squeeze(-1)  # (seq,)
+            alpha = probe_obj.alpha
+            ema = torch.zeros_like(probe_scores)
+            ema[0] = probe_scores[0]
+            for j in range(1, seq_len):
+                ema[j] = alpha * probe_scores[j] + (1 - alpha) * ema[j - 1]
+            # Cumulative: running max of ema, sigmoid'd.
+            running_max = torch.cummax(ema, dim=0).values
+            cumulative = [round(float(v), 3) for v in torch.sigmoid(running_max).tolist()]
+            # Contributions: the EMA value at each position (not the max).
+            contributions = [round(float(v), 3) for v in torch.sigmoid(ema).tolist()]
+
+    return cumulative, contributions
 
 
 def batch_score(
@@ -236,8 +384,22 @@ def batch_score(
         captured.clear()
 
         # Score with all probes.
-        all_scores = _score_example(activations, probes)
+        all_results = _score_example(activations, probes)
         del activations
+
+        # Flatten into viewer-compatible format:
+        #   scores:        {probe_type: {layer: [per-token]}}
+        #   cumulative:    {probe_type: {layer: [causal running]}}    (seq probes only)
+        #   contributions: {probe_type: {layer: [contribution]}}      (seq probes only)
+        flat_scores = {}
+        flat_cumulative = {}
+        flat_contributions = {}
+        for pt, entry in all_results.items():
+            flat_scores[pt] = entry["scores"]
+            if "cumulative" in entry:
+                flat_cumulative[pt] = entry["cumulative"]
+            if "contributions" in entry:
+                flat_contributions[pt] = entry["contributions"]
 
         # Save per-example JSON.
         example_data = {
@@ -248,8 +410,12 @@ def batch_score(
             "text_preview": text[:120],
             "probe_types": probe_types,
             "layers": layers,
-            "scores": all_scores,
+            "scores": flat_scores,
         }
+        if flat_cumulative:
+            example_data["cumulative"] = flat_cumulative
+        if flat_contributions:
+            example_data["contributions"] = flat_contributions
         example_path = output_dir / f"example_{idx:04d}.json"
         with open(example_path, "w") as f:
             json.dump(example_data, f)
