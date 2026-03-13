@@ -1,11 +1,8 @@
 """Batch per-token probe scoring for a dataset.
 
 Processes every example through the model once, scores with per-token
-probes (linear, mlp, mean_diff) at every token position, and saves one
-JSON per example to an output directory.  Designed for SLURM GPU jobs.
-
-Sequence probes (attention, multimax, max_rolling_mean, ema) are skipped
-because per-token attribution is unreliable for multi-token aggregators.
+probes (linear, mlp) at every token position, and saves one JSON per
+example to an output directory.  Designed for SLURM GPU jobs.
 
 Output structure:
     {output_dir}/
@@ -19,12 +16,11 @@ Each example JSON:
         "label": 1,
         "num_tokens": 512,
         "token_strs": ["Can", " you", ...],
-        "probe_types": ["linear", "mlp", "mean_diff"],
+        "probe_types": ["linear", "mlp"],
         "layers": [0, 1, 2, ...],
         "scores": {
-            "linear":    {"0": [0.12, ...], "1": [0.34, ...], ...},
-            "mlp":       {"0": [0.11, ...], ...},
-            "mean_diff": {"0": [0.23, ...], ...},
+            "linear": {"0": [0.12, ...], "1": [0.34, ...], ...},
+            "mlp":    {"0": [0.11, ...], ...},
         }
     }
 
@@ -53,10 +49,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from probes.architectures import build_probe
 
 
-def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dict]]:
-    """Load all trained probes.
+PROBE_TYPES = {"linear", "mlp"}
 
-    Returns {probe_type: {layer_idx: {"probe": probe_obj, "ckpt": ckpt_data, "threshold": float}}}
+
+def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dict]]:
+    """Load linear and MLP probes.
+
+    Returns {probe_type: {layer_idx: {"probe": probe_obj, "threshold": float}}}
     """
     probes: dict[str, dict[int, dict]] = {}
 
@@ -69,6 +68,8 @@ def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dic
             if not probe_dir.is_dir():
                 continue
             probe_type = probe_dir.name
+            if probe_type not in PROBE_TYPES:
+                continue
             ckpt_path = probe_dir / "probe.pt"
             met_path = probe_dir / "metrics.json"
             if not ckpt_path.exists() or not met_path.exists():
@@ -77,16 +78,14 @@ def _load_probes(results_dir: Path, hidden_size: int) -> dict[str, dict[int, dic
             ckpt = torch.load(ckpt_path, weights_only=False, map_location="cpu")
             metrics = json.loads(met_path.read_text())
 
-            if ckpt["type"] == "mean_diff":
-                probe_obj = None
-                info = {"direction": ckpt["direction"], "threshold": ckpt["threshold"]}
-            else:
-                probe_obj = build_probe(probe_type, hidden_size)
-                probe_obj.load_state_dict(ckpt["state_dict"])
-                probe_obj.eval()
-                info = {"probe": probe_obj, "threshold": metrics["threshold"]}
-
-            info["type"] = ckpt["type"]
+            probe_obj = build_probe(probe_type, hidden_size)
+            probe_obj.load_state_dict(ckpt["state_dict"])
+            probe_obj.eval()
+            info = {
+                "probe": probe_obj,
+                "type": ckpt["type"],
+                "threshold": metrics["threshold"],
+            }
             probes.setdefault(probe_type, {})[layer_idx] = info
 
     return probes
@@ -96,47 +95,25 @@ def _score_example(
     activations: dict[int, torch.Tensor],
     probes: dict[str, dict[int, dict]],
 ) -> dict:
-    """Score one example with all probes at all layers.
+    """Score one example with linear/MLP probes at all layers.
 
     Returns {probe_type: {layer: [per-token scores]}}
-
-    Only scores probes where per-token analysis is meaningful (linear, mlp,
-    mean_diff). Sequence probes (attention, multimax, max_rolling_mean, ema)
-    are skipped — per-token attribution is unreliable for them.
     """
     results: dict = {}
-    PER_TOKEN_PROBES = {"mean_diff", "linear", "mlp"}
 
     for probe_type, layer_probes in probes.items():
-        if probe_type not in PER_TOKEN_PROBES:
-            continue
-
         layer_scores: dict[str, list[float]] = {}
 
         for layer_idx, info in sorted(layer_probes.items()):
             act = activations[layer_idx]  # (1, seq_len, hidden)
             x = act[0]  # (seq_len, hidden)
-            seq_len = x.shape[0]
-
-            if info["type"] == "mean_diff":
-                direction = info["direction"]
-                raw = x.numpy() @ direction
-                lo, hi = raw.min(), raw.max()
-                if hi - lo > 1e-8:
-                    scores = ((raw - lo) / (hi - lo)).tolist()
-                else:
-                    scores = [0.5] * len(raw)
-                layer_scores[str(layer_idx)] = [round(s, 3) for s in scores]
-                continue
 
             probe_obj = info["probe"]
             with torch.no_grad():
                 if hasattr(probe_obj, "transform") and hasattr(probe_obj, "head"):
-                    # MLPProbe: transform + linear head works per-token.
                     y = probe_obj.transform(x)
                     logits = probe_obj.head(y).squeeze(-1)
                 elif hasattr(probe_obj, "linear"):
-                    # LinearProbe: single linear layer works per-token.
                     logits = probe_obj.linear(x).squeeze(-1)
                 else:
                     logits = probe_obj(x)

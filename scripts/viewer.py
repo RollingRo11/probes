@@ -308,12 +308,7 @@ def _build_analysis_chart(
     """Build an HTML canvas chart showing stat across layers for each probe."""
     probe_colors = {
         'linear': '#e94560',
-        'ema': '#f39c12',
         'mlp': '#2ecc71',
-        'attention': '#3498db',
-        'multimax': '#9b59b6',
-        'max_rolling_mean': '#e67e22',
-        'mean_diff': '#95a5a6',
     }
     # Prepare series data
     series = {}
@@ -543,26 +538,7 @@ num_tokens = example["num_tokens"]
 label = example["label"]
 scores_for_probe = example["scores"].get(probe_type, {})
 layer_scores = scores_for_probe.get(str(layer), [0.0] * num_tokens)
-
-# For sequence probes, use cumulative scores for token highlighting if available.
-has_cumulative = "cumulative" in example and probe_type in example.get("cumulative", {})
-has_contributions = "contributions" in example and probe_type in example.get("contributions", {})
-if has_cumulative:
-    cumulative_for_probe = example["cumulative"][probe_type]
-    cumulative_scores = cumulative_for_probe.get(str(layer), [0.0] * num_tokens)
-else:
-    cumulative_scores = None
-# Use contributions for highlighting (cumulative saturates to 1.0 too quickly).
-if has_contributions:
-    contribution_for_probe_hl = example["contributions"][probe_type]
-    highlight_scores = contribution_for_probe_hl.get(str(layer), [0.0] * num_tokens)
-else:
-    highlight_scores = layer_scores
-if has_contributions:
-    contribution_for_probe = example["contributions"][probe_type]
-    contribution_scores = contribution_for_probe.get(str(layer), [0.0] * num_tokens)
-else:
-    contribution_scores = None
+highlight_scores = layer_scores
 
 # ---------------------------------------------------------------------------
 # Color function
@@ -592,11 +568,10 @@ def score_color(s: float) -> str:
 
 label_text = "AWARE" if label == 1 else "NOT AWARE"
 label_color = "#e74c3c" if label == 1 else "#2ecc71"
-highlight_mode = " · contribution highlight" if has_contributions else ""
 st.markdown(
     f"### Example #{example['index']} &nbsp; "
     f"<span style='color:{label_color};font-size:14px;'>[{label_text}]</span> &nbsp; "
-    f"<span style='color:#888;font-size:13px;'>{num_tokens} tokens · Layer {layer} · {probe_type}{highlight_mode}</span>",
+    f"<span style='color:#888;font-size:13px;'>{num_tokens} tokens · Layer {layer} · {probe_type}</span>",
     unsafe_allow_html=True,
 )
 
@@ -615,20 +590,13 @@ import html as html_mod
 
 # Build token data for the JS component.
 token_data = []
-for j, (tok, h_score, raw_score) in enumerate(
-    zip(token_strs, highlight_scores, layer_scores)
-):
-    contrib = contribution_scores[j] if contribution_scores else None
-    td = {
+for j, (tok, score) in enumerate(zip(token_strs, layer_scores)):
+    token_data.append({
         "idx": j,
         "text": html_mod.escape(tok).replace("\n", "<br>"),
-        "score": round(raw_score, 3),
-        "highlight": round(h_score, 3),
-        "color": score_color(h_score),
-    }
-    if contrib is not None:
-        td["contribution"] = round(contrib, 3)
-    token_data.append(td)
+        "score": round(score, 3),
+        "color": score_color(score),
+    })
 
 token_data_json = json.dumps(token_data)
 selected = st.session_state.selected_token
@@ -636,8 +604,6 @@ selected = st.session_state.selected_token
 # Pass full scores to JS so it can recompute chart for any clicked token.
 all_layers = example["layers"]
 full_scores_json = json.dumps(example["scores"])
-full_cumulative_json = json.dumps(example.get("cumulative", {}))
-full_contributions_json = json.dumps(example.get("contributions", {}))
 layers_json = json.dumps(all_layers)
 probe_types_json = json.dumps(example["probe_types"])
 
@@ -761,15 +727,12 @@ canvas {{
         <h3 id="detail-title">Token 0</h3>
         <div class="detail-token" id="detail-token"></div>
         <div class="detail-score" id="detail-score"></div>
-        <div class="detail-score" id="detail-contribution" style="margin-top:4px;"></div>
-        <div class="detail-score" id="detail-cumulative" style="margin-top:4px;"></div>
     </div>
     <div class="chart-container">
         <div class="chart-header">
             <h3>Score across layers</h3>
             <div>
-                <label><input type="checkbox" id="show-cumulative" {'checked' if has_cumulative else ''} onchange="drawChart()"> Cumulative</label>
-                <label style="margin-left:12px;"><input type="checkbox" id="show-all" onchange="drawChart()"> All probes</label>
+                <label><input type="checkbox" id="show-all" onchange="drawChart()"> All probes</label>
             </div>
         </div>
         <canvas id="chart" height="180"></canvas>
@@ -781,22 +744,17 @@ canvas {{
 <script>
 const tokenData = {token_data_json};
 const fullScores = {full_scores_json};
-const fullCumulative = {full_cumulative_json};
-const fullContributions = {full_contributions_json};
 const layers = {layers_json};
 const probeTypes = {probe_types_json};
 const currentProbe = {json.dumps(probe_type)};
-const hasCumulative = {json.dumps(has_cumulative)};
 const nTokens = tokenData.length;
 let selectedIdx = {selected};
 
-// Extract chart series for a given token index (per-token independent scores).
-function getChartSeries(tokIdx, useCumulative) {{
+// Extract chart series for a given token index.
+function getChartSeries(tokIdx) {{
     const series = {{}};
-    const source = useCumulative ? fullCumulative : fullScores;
     probeTypes.forEach(pt => {{
-        // Fall back to fullScores if cumulative not available for this probe.
-        const ptData = (useCumulative && source[pt]) ? source[pt] : (fullScores[pt] || {{}});
+        const ptData = fullScores[pt] || {{}};
         series[pt] = layers.map(l => {{
             const layerArr = ptData[String(l)] || [];
             return layerArr[tokIdx] || 0;
@@ -807,11 +765,7 @@ function getChartSeries(tokIdx, useCumulative) {{
 
 const probeColors = {{
     'linear': '#e94560',
-    'ema': '#f39c12',
     'mlp': '#2ecc71',
-    'attention': '#3498db',
-    'multimax': '#9b59b6',
-    'max_rolling_mean': '#e67e22',
 }};
 
 // Build tokens.
@@ -822,10 +776,7 @@ tokenData.forEach((t, j) => {{
     span.className = 'tok' + (j === selectedIdx ? ' selected' : '');
     span.innerHTML = t.text;
     span.style.background = t.color;
-    const tipParts = [`pos ${{j}} | score ${{t.score.toFixed(3)}}`];
-    if (t.highlight !== undefined && t.highlight !== t.score) tipParts.push(`cumulative ${{t.highlight.toFixed(3)}}`);
-    if (t.contribution !== undefined) tipParts.push(`contribution ${{t.contribution.toFixed(3)}}`);
-    span.title = tipParts.join(' | ');
+    span.title = `pos ${{j}} | score ${{t.score.toFixed(3)}}`;
     span.addEventListener('click', () => selectToken(j));
     container.appendChild(span);
     tokenEls.push(span);
@@ -852,21 +803,7 @@ function updateDetail() {{
     const t = tokenData[selectedIdx];
     document.getElementById('detail-title').textContent = 'Token ' + selectedIdx;
     document.getElementById('detail-token').innerHTML = t.text;
-    document.getElementById('detail-score').textContent = 'Per-token score: ' + t.score.toFixed(4);
-    const cumEl = document.getElementById('detail-cumulative');
-    const contribEl = document.getElementById('detail-contribution');
-    if (t.highlight !== undefined && t.highlight !== t.score) {{
-        cumEl.textContent = 'Cumulative score: ' + t.highlight.toFixed(4);
-        cumEl.style.display = '';
-    }} else {{
-        cumEl.style.display = 'none';
-    }}
-    if (t.contribution !== undefined) {{
-        contribEl.textContent = 'Contribution: ' + t.contribution.toFixed(4);
-        contribEl.style.display = '';
-    }} else {{
-        contribEl.style.display = 'none';
-    }}
+    document.getElementById('detail-score').textContent = 'Score: ' + t.score.toFixed(4);
 }}
 
 function drawChart() {{
@@ -883,8 +820,7 @@ function drawChart() {{
     ctx.clearRect(0, 0, W, H);
 
     const showAll = document.getElementById('show-all').checked;
-    const showCumulative = document.getElementById('show-cumulative').checked;
-    const chartSeries = getChartSeries(selectedIdx, showCumulative);
+    const chartSeries = getChartSeries(selectedIdx);
     const probes = showAll ? probeTypes : [currentProbe];
 
     const pad = {{ left: 40, right: 16, top: 12, bottom: 24 }};

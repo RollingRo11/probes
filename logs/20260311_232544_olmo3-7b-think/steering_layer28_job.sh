@@ -12,6 +12,6 @@ uv run python scripts/steer.py \
     --layer 28 \
     --probe-type linear \
     --batch \
-    --alphas '-20,-10,-5,0,5,10,20' \
+    --alphas='-20,-10,-5,0,5,10,20' \
     --max-new-tokens 512 \
     --temperature 0.7
