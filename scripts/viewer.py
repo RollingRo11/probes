@@ -37,7 +37,7 @@ def get_run_dir() -> Path:
     if os.environ.get("PROBE_DATA_DIR"):
         return Path(os.environ["PROBE_DATA_DIR"]).parent
     repo_root = Path(__file__).resolve().parent.parent
-    default = repo_root / "logs" / "20260311_232544_olmo3-7b-think"
+    default = repo_root / "logs" / "20260312_215816_olmo3-7b-think"
     if default.exists():
         return default
     st.error("No run directory found. Set --run-dir or PROBE_DATA_DIR env var.")
@@ -500,8 +500,12 @@ selected_idx = st.sidebar.selectbox(
     format_func=lambda i: example_options[i],
 )
 
-# Probe type.
-probe_type = st.sidebar.selectbox("Probe type", manifest["probe_types"], index=0)
+# Probe type (only linear and mlp supported).
+SUPPORTED_PROBES = ["linear", "mlp"]
+available_probes = [p for p in manifest["probe_types"] if p in SUPPORTED_PROBES]
+if not available_probes:
+    available_probes = SUPPORTED_PROBES
+probe_type = st.sidebar.selectbox("Probe type", available_probes, index=0)
 
 # Layer slider.
 layers = manifest["layers"]
