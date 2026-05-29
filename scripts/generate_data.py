@@ -675,6 +675,102 @@ def augment_with_vllm(
 
 
 # ---------------------------------------------------------------------------
+# Dataset 5: Paired Contrastive (arXiv:2603.19426)
+#
+# 2×2 matrix that decorrelates prompt format from evaluation context:
+#   Bench-Eval    : benchmark-formatted evaluation prompts (MMLU, ARC, GSM8K)
+#   Casual-Eval   : free-form evaluation prompts (MuTual dataset)
+#   Bench-Deploy  : benchmark-formatted deployment prompts (ShareGPT rewritten)
+#   Casual-Deploy : free-form deployment prompts (ShareGPT)
+#
+# Both classes (eval/deploy) contain both formats, so the probe cannot rely
+# on format as a shortcut.  This fixes the format-sensitivity confound
+# identified in the paper (94.5% → 7.2% misclassification).
+#
+# Data source: https://huggingface.co/datasets/viliana-dev/eval-awareness-2x2
+# ---------------------------------------------------------------------------
+
+
+def load_paired_contrastive(seed: int = 42) -> list[dict]:
+    """Load the paired contrastive 2×2 dataset (arXiv:2603.19426).
+
+    Produces a balanced dataset where:
+      label 1 (evaluation) = bench_eval ∪ casual_eval_mutual
+      label 0 (deployment) = casual_deploy_matched ∪ bench_deploy_rewritten
+
+    Both classes contain both benchmark and casual formats, preventing
+    the probe from learning format shortcuts.
+
+    Fields
+    ------
+    text   : the formatted prompt string
+    label  : 1 for evaluation context, 0 for deployment context
+    source : "paired_bench_eval", "paired_casual_eval",
+             "paired_bench_deploy", "paired_casual_deploy"
+    format : "benchmark" or "casual" — the prompt format (orthogonal to label)
+    """
+    from datasets import load_dataset as hf_load
+
+    rng = random.Random(seed)
+    rows: list[dict] = []
+    uid = 0
+
+    # Each config has a different schema; map config → text field name.
+    configs = [
+        ("bench_eval",             1, "paired_bench_eval",    "benchmark", "formatted_prompt"),
+        ("casual_eval_mutual",     1, "paired_casual_eval",   "casual",    "first_turn"),
+        ("casual_deploy_matched",  0, "paired_casual_deploy", "casual",    "first_turn"),
+        ("bench_deploy_rewritten", 0, "paired_bench_deploy",  "benchmark", "rewritten"),
+    ]
+
+    for config_name, label, source_tag, fmt, text_field in configs:
+        print(f"[paired_contrastive] Loading {config_name} …")
+        ds = hf_load(
+            "viliana-dev/eval-awareness-2x2",
+            data_dir=config_name,
+            split="train",
+        )
+        for ex in ds:
+            text = ex.get(text_field, "")
+            if not text or len(text.strip()) < 10:
+                continue
+            rows.append({
+                "id": str(uid),
+                "text": text.strip(),
+                "label": label,
+                "source": source_tag,
+                "format": fmt,
+            })
+            uid += 1
+
+    # Balance classes: downsample the larger class to match the smaller.
+    eval_rows = [r for r in rows if r["label"] == 1]
+    deploy_rows = [r for r in rows if r["label"] == 0]
+    min_size = min(len(eval_rows), len(deploy_rows))
+
+    rng.shuffle(eval_rows)
+    rng.shuffle(deploy_rows)
+    rows = eval_rows[:min_size] + deploy_rows[:min_size]
+
+    # Re-assign sequential IDs.
+    for i, r in enumerate(rows):
+        r["id"] = str(i)
+
+    rng.shuffle(rows)
+
+    n_eval = sum(1 for r in rows if r["label"] == 1)
+    n_deploy = sum(1 for r in rows if r["label"] == 0)
+    n_bench = sum(1 for r in rows if r["format"] == "benchmark")
+    n_casual = sum(1 for r in rows if r["format"] == "casual")
+    print(
+        f"[paired_contrastive] {len(rows)} examples  "
+        f"(eval={n_eval}, deploy={n_deploy}, "
+        f"benchmark_fmt={n_bench}, casual_fmt={n_casual})"
+    )
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -684,14 +780,18 @@ def main() -> None:
     ap.add_argument(
         "--dataset",
         default="default",
-        choices=["default", "sad_stages", "simple_contrastive", "pivotal_contrastive", "all"],
+        choices=[
+            "default", "sad_stages", "simple_contrastive",
+            "pivotal_contrastive", "paired_contrastive", "all",
+        ],
         help=(
             "Dataset to generate:\n"
             "  default              — synthetic prompts (fast, no HF downloads)\n"
             "  sad_stages           — SAD stages_oversight (Laine et al. 2024 / arXiv:2509.13333)\n"
             "  simple_contrastive   — Simple Contrastive Dataset (arXiv:2507.01786)\n"
             "  pivotal_contrastive  — Pivotal Contrastive Dataset (Jordine/pivotal-test-phase-steering)\n"
-            "  all                  — all four concatenated"
+            "  paired_contrastive   — Paired 2×2 Dataset (arXiv:2603.19426, format-deconfounded)\n"
+            "  all                  — all five concatenated"
         ),
     )
     ap.add_argument("--out", default="data/eval_awareness.jsonl")
@@ -749,6 +849,9 @@ def main() -> None:
 
     if args.dataset in ("pivotal_contrastive", "all"):
         rows += load_pivotal_contrastive(seed=args.seed)
+
+    if args.dataset in ("paired_contrastive", "all"):
+        rows += load_paired_contrastive(seed=args.seed)
 
     if args.dataset in ("default", "all"):
         n_each = 300 if args.n is None else args.n // 2

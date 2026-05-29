@@ -1,0 +1,78 @@
+# Paired contrastive training (arXiv:2603.19426)
+#
+# Uses the 2x2 format-deconfounded dataset where both eval and deploy classes
+# contain both benchmark and casual formats. This prevents probes from learning
+# format shortcuts (reducing format-sensitivity misclassification from 94.5% to 7.2%).
+#
+# Key difference from other configs: uses "last" token strategy (not answer_token)
+# since this dataset uses full prompts, not MCQ answer positions.
+
+model:
+  id: "allenai/Olmo-3-7B-Think"
+  short_name: "olmo3-7b-think"
+  num_layers: 32
+  hidden_size: 4096
+  layer_path: "model.layers"
+  layer_output_index: null
+
+probes:
+  types:
+    - mean_diff
+    - linear
+    - mlp
+  layers: "all"
+  mlp_hidden_dim: 100
+  mlp_n_layers: 2
+
+dataset:
+  path: "data/paired_contrastive.jsonl"
+  text_col: "text"
+  label_col: "label"
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  seed: 42
+
+extraction:
+  batch_size: 8
+  # "last" token strategy — the dataset has no answer_token_char field.
+  # This matches the methodology in arXiv:2603.19426 (last token before
+  # final layer norm).
+  token_strategy: "last"
+  max_length: 2048
+
+training:
+  loss: "bce"
+  optimizer: "adamw"
+  lr: 1.0e-4
+  weight_decay: 3.0e-3
+  betas: [0.9, 0.999]
+  epochs: 1000
+  full_batch: true
+  n_seeds: 10
+
+evaluation:
+  threshold: "youden"
+  fnr_weight: 5.0
+  hard_neg_fpr_weight: 2.0
+  overtrigger_fpr_weight: 50.0
+
+slurm:
+  partition: "compute"
+  max_concurrent: 16
+  extract_timeout: "6:00:00"
+  train_timeout: "2:00:00"
+  job_name: "probes-paired"
+  gpus_per_node: 8
+  cpus_per_node: 64
+  extract_gpus: 1
+  train_gpus: 1
+
+wandb:
+  enabled: true
+  project: "probes"
+
+paths:
+  data: "data/"
+  activations: "activations/"
+  results: "results/"

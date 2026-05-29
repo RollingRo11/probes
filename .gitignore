@@ -247,3 +247,28 @@ sad-decrypted/
 **/test_oversight.yaml
 **/deploy_oversight.yaml
 **/oversight.yaml
+
+# Cluster runtime artifacts
+logs/
+.claude/
+~./
+*.err
+*.out
+slurm-*.out
+slurm-*.err
+
+# Caches
+.cache/
+hub/
+HF_CACHE_DIR/
+
+# Large data / models
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.pth
+*.npz
+*.h5
+*.hdf5
+*.parquet

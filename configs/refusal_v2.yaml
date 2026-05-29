@@ -1,0 +1,67 @@
+# Refusal probe v2: predicts whether the model will refuse.
+# Labels from actual model generations (greedy decoding) on Arditi et al. data.
+# Trained on prompt activations at last token position.
+#
+# Data: 299 harmful + 300 harmless prompts from Arditi et al. (2024)
+#   "Refusal in Language Models Is Mediated by a Single Direction"
+# Labels: keyword-matched refused/complied from OLMo-3-7B-Think generations.
+
+model:
+  id: "allenai/Olmo-3-7B-Think"
+  short_name: "olmo3-7b-think"
+  num_layers: 32
+  hidden_size: 4096
+  layer_path: "model.layers"
+  layer_output_index: null
+
+probes:
+  types:
+    - mean_diff
+    - linear
+  layers: "all"
+
+dataset:
+  path: "data/refusal_v2.jsonl"
+  text_col: "text"
+  label_col: "label"   # 0 = model complied, 1 = model refused
+  train_frac: 0.8
+  val_frac: 0.1
+  test_frac: 0.1
+  seed: 42
+
+extraction:
+  batch_size: 8
+  token_strategy: "last"
+  max_length: 2048
+
+training:
+  loss: "bce"
+  optimizer: "adamw"
+  lr: 1.0e-4
+  weight_decay: 3.0e-3
+  betas: [0.9, 0.999]
+  epochs: 1000
+  full_batch: true
+  n_seeds: 1
+
+evaluation:
+  threshold: "youden"
+  fnr_weight: 5.0
+  hard_neg_fpr_weight: 2.0
+  overtrigger_fpr_weight: 50.0
+
+slurm:
+  partition: "compute"
+  max_concurrent: 8
+  extract_timeout: "4:00:00"
+  train_timeout: "1:00:00"
+  job_name: "refuse-v2"
+  gpus_per_node: 8
+  cpus_per_node: 64
+  extract_gpus: 1
+  train_gpus: 1
+
+wandb:
+  enabled: true
+  project: "probes"
+  entity: null

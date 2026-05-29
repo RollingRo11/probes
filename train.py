@@ -253,8 +253,12 @@ def run_extract(config: dict, log_dir: Path) -> None:
         )
         token_strategy = "last"
 
-    # Chat-template formatting is NOT applied when char offsets must be preserved.
-    if answer_token_chars is None and token_strategy != "evidence_spans":
+    # Chat-template formatting is NOT applied when char offsets must be preserved
+    # or when the data is already pre-formatted (skip_chat_template=true).
+    skip_template = ext_cfg.get("skip_chat_template", False)
+    if skip_template:
+        formatted = texts  # data already has chat template applied
+    elif answer_token_chars is None and token_strategy != "evidence_spans":
         formatted = apply_chat_template(config, texts)
     else:
         formatted = texts  # keep raw text so char offsets remain valid

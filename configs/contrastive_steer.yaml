@@ -1,0 +1,55 @@
+# Contrastive Activation Steering configuration
+#
+# Based on Hua, Qin, Marks & Nanda (arXiv:2510.20487) which achieved
+# <11% evaluation-aware behaviour using contrastive activation addition
+# across multiple layers (vs. <5% recovery for probe-based steering).
+#
+# This config is used by: scripts/contrastive_steer.py
+#
+# Key insight: steering vectors come from contrastive activation differences
+# (mean_eval - mean_deploy), NOT from trained probe weights. Each layer gets
+# its own direction. A single scaling factor is applied uniformly.
+
+model:
+  id: "allenai/Olmo-3-7B-Think"
+  short_name: "olmo3-7b-think"
+  num_layers: 32
+  hidden_size: 4096
+
+steering:
+  # Contrastive data for extracting steering vectors.
+  # Use the paired dataset (arXiv:2603.19426) to avoid format confounds.
+  contrastive_data: "data/paired_contrastive.jsonl"
+
+  # Layers to apply steering hooks.
+  # Hua et al. used 6 layers; for a 32-layer model, mid layers are best.
+  steer_layers: "10-25"
+
+  # Scaling factors to sweep.
+  # Negative = push toward deployment, positive = push toward evaluation.
+  # Hua et al. found 0.6 optimal; we sweep a range to find the best.
+  alphas: "-2,-1,-0.6,-0.3,0,0.3,0.6,1,2"
+
+  # Extraction settings for contrastive vectors.
+  extract_batch_size: 8
+  max_length: 2048
+
+scoring:
+  # Layer for probe-based scoring of steered completions.
+  # Should be a layer where probes achieve high AUROC.
+  score_layer: 26
+
+  # Run directory containing trained probes (from train.py).
+  # Set to a specific run path before use.
+  run_dir: null
+
+generation:
+  max_examples: 50
+  max_new_tokens: 256
+  temperature: 0.7
+  eval_data: "data/fortress.jsonl"
+
+slurm:
+  partition: "compute"
+  time: "6:00:00"
+  gpus: 1
